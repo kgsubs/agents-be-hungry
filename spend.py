@@ -1617,7 +1617,7 @@ def render_html(s, refresh=False, warning=None):
     else:
         p.append('<div class="tl"><ul>{}</ul></div>'.format(
             "".join("<li>{}</li>".format(esc(f)) for f in t["findings"])))
-        p.append('<div class="tl insight"><h3>Meaning</h3><p>{}</p></div>'.format(esc(t["meaning"])))
+        p.append('<div class="tl insight"><h3>What&#x27;s that mean?</h3><p>{}</p></div>'.format(esc(t["meaning"])))
         p.append('<div class="tl"><h3 title="Hover a dollar figure to see the math.">{}</h3>'.format(
             page_tips_heading(len(t["recommendations"]))))
         if t["recommendations"]:
