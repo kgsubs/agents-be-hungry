@@ -26,15 +26,30 @@ git clone https://github.com/kgsubs/claude-spend %USERPROFILE%\.claude\skills\cl
 
 Run from the skill folder:
 
-    python3 spend.py                      today's total, by model, top 5 sessions
+    python3 spend.py                      today's spend: totals, models, sessions, subagents
     python3 spend.py --html               write dashboard.html and open it
+    python3 spend.py --artifact           write artifact.html, the page to publish as an artifact
+    python3 spend.py --json               print everything as JSON for other tools
     python3 spend.py --watch              rewrite the dashboard every 60 seconds
     python3 spend.py --days 14            change the history from 7 days
     python3 spend.py --date 2026-11-10    show a past day
     python3 spend.py --out PATH           write the dashboard to PATH
     python3 spend.py --no-open            do not open a browser
 
+The terminal output and the page show the same sections: the header (total, change from the day before, the average over the history, last update), where the money went (output, cache reads, 5-minute and 1-hour cache writes, uncached input, web searches), every model seen in the history with this day's tokens by type, the 10 biggest sessions, the 15 biggest subagents, spend by project, by hour, the last N days, and a data quality panel.
+
 On Windows use `python` or `py` in place of `python3`. The file path of the dashboard is always printed; if no browser can be opened, the script carries on. Exit code is 0 on success and non-zero with a message on bad flags. If `CLAUDE_CONFIG_DIR` is set, transcripts are read from there instead of `~/.claude`.
+
+## The artifact link
+
+When Claude can make artifacts (the Artifact tool is available in the session), the skill publishes the page to your Claude account as a private artifact and keeps one link that updates:
+
+1. `python3 spend.py --artifact` writes `artifact.html` in the skill folder: one self-contained page, no scripts, no outside fonts, no auto-refresh, light and dark mode.
+2. The first time, Claude publishes it as a new artifact and saves its URL to `.artifact-url` in the skill folder.
+3. Each later time you ask, Claude rewrites `artifact.html` and republishes it to the saved URL, so the same link shows the latest numbers.
+4. If that artifact was deleted or the publish is refused, Claude publishes a new one and saves the new URL.
+
+The artifact is private to your Claude account until you share it. `artifact.html` and `.artifact-url` are in `.gitignore`. Without the Artifact tool, the skill falls back to `--html` and the file path.
 
 ## On a VPS or server
 
@@ -63,7 +78,7 @@ Then open http://127.0.0.1:8765/dashboard.html. Binding to 127.0.0.1 keeps the p
 
 ## How cost is worked out
 
-Claude Code writes each session to `~/.claude/projects/<project-folder>/<session-id>.jsonl`, and subagents to `.../<session-id>/subagents/agent-*.jsonl`, which are counted under their parent session. For each response:
+Claude Code writes each session to `~/.claude/projects/<project-folder>/<session-id>.jsonl`, and subagents to `.../<session-id>/subagents/agent-*.jsonl` (also in folders below `subagents`, such as workflow runs), which are counted under their parent session. Each subagent has an `agent-<id>.meta.json` beside it; its `description` is the name shown on the page, and its `model` is the model that was asked for. Cost is always priced by the `message.model` that actually answered. A subagent with no meta file is named by the first line of its first prompt, or `agent-<id>`. Its status is finished (the meta file says so), running (written to in the last 5 minutes) or stopped. For each response:
 
     cost = input x input price
          + output x output price
@@ -74,7 +89,24 @@ Claude Code writes each session to `~/.claude/projects/<project-folder>/<session
 
 Prices are per million tokens and come from `prices.json`. Models are matched by name, ignoring an optional trailing `-YYYYMMDD` date. A model with no price gets its own "unpriced" row with its tokens and is not added to the total. Responses with no tokens (`<synthetic>` placeholders) are ignored. Three modifiers from the pricing page apply when the transcript says so: Claude Haiku 5.5 prompts over 100,000 tokens use a higher price set; fast mode uses its 2x multiplier on models that have one; US-only inference uses 1.1x.
 
-The dedupe rule: Claude Code writes the same response on several lines with identical usage. Each `message.id` + `requestId` pair is counted once across all files, or totals come out far too high.
+`usage.iterations` lists every attempt the API made for a request. When it has one entry, it equals the top-level usage, so the top-level usage is priced. An `advisor_message` entry is an advisor consultation, billed at the advisor model's rates on top of the top-level usage, so it is priced as its own piece at that model. When there is more than one non-advisor entry (a fallback), each attempt is billed, so each is priced. `fallback_credit` was empty on every response checked, so it changes nothing here.
+
+The dedupe rule: Claude Code writes the same response on several lines. Each `message.id` + `requestId` pair is counted once across all files, or totals come out far too high. Copies have always had identical usage; if a later copy ever has different usage, the last one written is kept and the data quality panel counts it.
+
+Days and hours are in the computer's local time zone: a response at 04:58 UTC on the 11th counts on the 10th in New York (UTC-5).
+
+## What the transcripts do not show
+
+Claude Code also makes calls it never writes to the transcript: conversation compaction, session titles, background-agent progress summaries, tool-use summaries, safety and permission checks, memory extraction, web page summaries and similar. When a session closes, Claude Code writes its own running tally to the session file (a `cost-state` line with the dollar cost per model, priced by Claude Code itself). That tally includes those calls.
+
+The page shows the difference as "Not in transcripts": for each pair of tally lines, the tally's increase minus the cost logged in the transcripts between them, per model, spread over the days in proportion to the logged cost. It is shown beside the totals, never added to the headline. A session that is still open has no tally yet, so its extra cost is not known until it closes; the page says how many sessions are open. On one machine, over 80 closed sessions, Claude Code's tally was 31% above the logged total. The tally had more of every token type than the transcripts, uncached input most of all, plus Haiku calls that never appear in a transcript. Pricing the tally's own per-model token counts with `prices.json` gave Claude Code's dollar figure within 1% in 195 of 206 cases; the other 11 cannot be checked from totals alone, because price tiers apply per request.
+
+The data quality panel also lists:
+
+- requests written to the transcript (`api-request` lines) that never got a response line, with the reason: interrupted by you, cut off when the session closed, or no response written;
+- compactions that day and how many tokens they summarized;
+- lines with zero usage (`<synthetic>` placeholders), which are skipped;
+- unpriced models, and the date and age of `prices.json`.
 
 Transcripts are read one line at a time, read only. Lines that cannot be parsed, such as a half-written last line, are skipped.
 
@@ -84,7 +116,7 @@ Transcripts are read one line at a time, read only. Lines that cannot be parsed,
 
 ## Privacy
 
-Nothing leaves your computer. `spend.py` makes no network calls. `dashboard.html` contains your prompts and project folder names, so do not share it as-is. It is listed in `.gitignore`.
+`spend.py` makes no network calls and only reads the transcripts. Nothing leaves your computer unless Claude publishes the page as an artifact, which is private to your Claude account. `dashboard.html` and `artifact.html` contain your prompts, agent names and project folder names, so do not share them as-is. Both are listed in `.gitignore`, with `.artifact-url`.
 
 ## Build your own instead
 

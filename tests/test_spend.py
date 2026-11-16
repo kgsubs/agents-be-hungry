@@ -25,18 +25,42 @@ def today_at(h, m=0):
     return datetime.combine(date.today(), datetime.min.time()).replace(hour=h, minute=m)
 
 
-def line(mid, rid, model="claude-sonnet-5-5", ts=None, inp=0, out=0, cr=0, w5=0, w1=0, **extra):
+def line(mid, rid, model="claude-sonnet-5-5", ts=None, inp=0, out=0, cr=0, w5=0, w1=0, ref=None,
+         iterations=None, top=None, **extra):
     usage = {"input_tokens": inp, "output_tokens": out, "cache_read_input_tokens": cr,
              "cache_creation_input_tokens": w5 + w1,
              "cache_creation": {"ephemeral_5m_input_tokens": w5, "ephemeral_1h_input_tokens": w1}}
+    if iterations is not None:
+        usage["iterations"] = iterations
     usage.update(extra)
-    return json.dumps({"type": "assistant", "timestamp": iso(ts or today_at(12)), "requestId": rid,
-                       "message": {"id": mid, "model": model, "usage": usage}})
+    o = {"type": "assistant", "timestamp": iso(ts or today_at(12)), "requestId": rid,
+         "message": {"id": mid, "model": model, "usage": usage}}
+    if ref:
+        o["requestRef"] = ref
+    o.update(top or {})
+    return json.dumps(o)
 
 
-def user(text, ts=None):
-    return json.dumps({"type": "user", "timestamp": iso(ts or today_at(11)),
-                       "message": {"role": "user", "content": text}})
+def user(text, ts=None, **extra):
+    o = {"type": "user", "timestamp": iso(ts or today_at(11)), "message": {"role": "user", "content": text}}
+    o.update(extra)
+    return json.dumps(o)
+
+
+def request(rid, ts=None):
+    return json.dumps({"type": "api-request", "id": rid, "timestamp": iso(ts or today_at(12)),
+                       "querySource": "repl_main_thread"})
+
+
+def cost_state(total, models, ts=None):
+    return json.dumps({"type": "cost-state", "totalCostUSD": total,
+                       "modelUsage": {m: {"costUSD": c} for m, c in models.items()}})
+
+
+def system(ts=None, **extra):
+    o = {"type": "system", "timestamp": iso(ts or today_at(12))}
+    o.update(extra)
+    return json.dumps(o)
 
 
 class Fixture:
@@ -53,12 +77,25 @@ class Fixture:
         p.write_text("\n".join(lines) + ("\n" if trailing_newline else ""), encoding="utf-8")
         return p
 
+    def meta(self, rel, **fields):
+        p = Path(self.root, "projects", *rel.split("/"))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(fields), encoding="utf-8")
+
 
 def run_summary(root, day=None, ndays=7):
     day = day or date.today()
     first = day - timedelta(days=ndays - 1)
     data = spend.scan(root, first, day, PRICES)
-    return data, spend.summarize(data, day)
+    return data, spend.summarize(data, day, ndays)
+
+
+def model(s, name):
+    return next(m for m in s["models"] if m["model"] == name)
+
+
+def day(s, d):
+    return next(x for x in s["days"] if x["date"] == d.isoformat())
 
 
 class SpendTests(unittest.TestCase):
@@ -69,9 +106,9 @@ class SpendTests(unittest.TestCase):
     def test_dedupe_counts_each_response_once(self):
         l = line("m1", "r1", inp=1_000_000, out=100_000)
         self.fx.write("proj/sess1.jsonl", [user("hello"), l, l, l, line("m2", "r2", inp=1_000_000)])
-        data, s = run_summary(self.fx.root)
-        self.assertEqual(s["lines_read"], 4)
-        self.assertEqual(s["unique_today"], 2)
+        _, s = run_summary(self.fx.root)
+        self.assertEqual(s["quality"]["assistant_lines"], 4)
+        self.assertEqual(s["quality"]["responses"], 2)
         self.assertAlmostEqual(s["total"], 3.00 + 2.00, places=6)
 
     def test_dedupe_across_files(self):
@@ -81,37 +118,121 @@ class SpendTests(unittest.TestCase):
         _, s = run_summary(self.fx.root)
         self.assertAlmostEqual(s["total"], 2.00, places=6)
 
+    def test_duplicate_with_different_usage_keeps_last(self):
+        self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1_000_000, out=10),
+                                       line("m1", "r1", inp=1_000_000, out=100_000)])
+        _, s = run_summary(self.fx.root)
+        self.assertAlmostEqual(s["total"], 2.00 + 1.00, places=6)
+        self.assertEqual(s["quality"]["responses"], 1)
+        self.assertEqual(s["quality"]["dupe_conflicts"], 1)
+
     def test_subagent_attributed_to_parent_session(self):
         self.fx.write("proj/sessA.jsonl", [user("do the thing"), line("m1", "r1", inp=1_000_000)])
         self.fx.write("proj/sessA/subagents/agent-1.jsonl", [line("m2", "r2", inp=500_000)])
         self.fx.write("proj/sessA/subagents/agent-2.jsonl", [line("m3", "r3", inp=500_000)])
         _, s = run_summary(self.fx.root)
-        self.assertEqual(len(s["rows"]), 1)
-        row = s["rows"][0]
+        self.assertEqual(len(s["sessions"]), 1)
+        row = s["sessions"][0]
         self.assertEqual(row["session"], "sessA")
         self.assertAlmostEqual(row["main"], 2.00, places=6)
         self.assertAlmostEqual(row["sub"], 2.00, places=6)
         self.assertAlmostEqual(row["total"], 4.00, places=6)
+        self.assertEqual(row["subagents"], 2)
         self.assertEqual(row["prompt"], "do the thing")
+
+    def test_subagent_named_from_meta(self):
+        self.fx.write("proj/s.jsonl", [user("parent prompt"), line("m1", "r1", inp=1000)])
+        self.fx.write("proj/s/subagents/agent-abc.jsonl", [
+            user("brief for the agent", ts=today_at(9)),
+            line("m2", "r2", model="claude-opus-5-5", ts=today_at(9, 5), inp=1_000_000),
+            line("m3", "r3", model="claude-opus-5-5", ts=today_at(9, 35), out=1000)])
+        self.fx.meta("proj/s/subagents/agent-abc.meta.json", description="PRICE CHECK [sonnet]",
+                     agentType="general-purpose", model="sonnet", finished=True)
+        _, s = run_summary(self.fx.root)
+        a = s["subagents"][0]
+        self.assertEqual(a["name"], "PRICE CHECK [sonnet]")
+        self.assertTrue(a["named"])
+        self.assertEqual(a["requested_model"], "sonnet")
+        self.assertEqual(a["models"], ["claude-opus-5-5"])      # priced by the model that answered
+        self.assertAlmostEqual(a["cost"], 4.00 + 0.02, places=6)
+        self.assertEqual(a["responses"], 2)
+        self.assertEqual(a["status"], "finished")
+        self.assertEqual(a["duration_s"], 35 * 60)
+        self.assertEqual(a["session_prompt"], "parent prompt")
+        self.assertIn("PRICE CHECK [sonnet]", spend.render_html(s))
+        self.assertIn("PRICE CHECK [sonnet]", spend.render_text(s))
+
+    def test_subagent_without_meta(self):
+        self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1000)])
+        self.fx.write("proj/s/subagents/agent-zz9.jsonl", [user("look up the weather"), line("m2", "r2", inp=1000)])
+        self.fx.write("proj/s/subagents/agent-yy8.jsonl", [line("m3", "r3", inp=1000)])
+        _, s = run_summary(self.fx.root)
+        names = {a["id"]: a for a in s["subagents"]}
+        self.assertEqual(names["zz9"]["name"], "look up the weather")
+        self.assertFalse(names["zz9"]["named"])
+        self.assertEqual(names["yy8"]["name"], "agent-yy8")
+        self.assertFalse(names["yy8"]["has_meta"])
+        self.assertIn(names["yy8"]["status"], ("running", "stopped"))
+
+    def test_nested_subagent_folder_counted(self):
+        self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1000)])
+        self.fx.write("proj/s/subagents/workflows/wf_1/agent-n1.jsonl", [line("m2", "r2", inp=1_000_000)])
+        _, s = run_summary(self.fx.root)
+        self.assertAlmostEqual(s["sessions"][0]["sub"], 2.00, places=6)
+
+    def test_token_type_split(self):
+        self.fx.write("proj/s.jsonl", [
+            line("m1", "r1", model="claude-opus-5-5", inp=1_000_000, out=1_000_000, cr=1_000_000,
+                 w5=1_000_000, w1=1_000_000, server_tool_use={"web_search_requests": 3})])
+        _, s = run_summary(self.fx.root)
+        split = {t["key"]: t for t in s["token_types"]}
+        self.assertEqual([t["key"] for t in s["token_types"]],
+                         ["output", "cache_read", "cache_write_5m", "cache_write_1h", "input", "searches"])
+        self.assertAlmostEqual(split["output"]["cost"], 20.0)
+        self.assertAlmostEqual(split["cache_read"]["cost"], 0.2)
+        self.assertAlmostEqual(split["cache_write_5m"]["cost"], 5.0)
+        self.assertAlmostEqual(split["cache_write_1h"]["cost"], 8.0)
+        self.assertAlmostEqual(split["input"]["cost"], 4.0)
+        self.assertAlmostEqual(split["searches"]["cost"], 0.03)
+        self.assertEqual(split["searches"]["tokens"], 3)
+        self.assertAlmostEqual(sum(t["cost"] for t in s["token_types"]), s["total"])
+        self.assertAlmostEqual(sum(t["percent"] for t in s["token_types"]), 100.0)
+        self.assertAlmostEqual(split["output"]["percent"], 100 * 20 / 37.23)
+
+    def test_all_models_listed_including_zero_today(self):
+        yday = today_at(12) - timedelta(days=1)
+        self.fx.write("proj/s.jsonl", [line("m1", "r1", model="claude-haiku-5-5", ts=yday, inp=50_000),
+                                       line("m2", "r2", model="claude-opus-5-5", inp=1_000_000)])
+        _, s = run_summary(self.fx.root)
+        names = [m["model"] for m in s["models"]]
+        self.assertEqual(names, ["claude-opus-5-5", "claude-haiku-5-5"])
+        h = model(s, "claude-haiku-5-5")
+        self.assertEqual(h["cost"], 0.0)
+        self.assertEqual(h["responses"], 0)
+        self.assertAlmostEqual(h["window_cost"], 0.005, places=6)
+        self.assertIn("claude-haiku-5-5", spend.render_text(s))
+        self.assertIn("claude-haiku-5-5", spend.render_html(s))
 
     def test_unknown_model_goes_to_unpriced(self):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", model="claude-future-9", inp=1000, out=500),
                                        line("m2", "r2", inp=1_000_000)])
         _, s = run_summary(self.fx.root)
-        self.assertFalse(s["models"]["claude-future-9"]["priced"])
-        self.assertEqual(s["models"]["claude-future-9"]["input"], 1000)
+        m = model(s, "claude-future-9")
+        self.assertFalse(m["priced"])
+        self.assertEqual(m["tokens"]["input"], 1000)
         self.assertAlmostEqual(s["total"], 2.00, places=6)
-        text = spend.render_text(s, date.today())
+        self.assertIn("claude-future-9", s["quality"]["unpriced_models"])
+        text = spend.render_text(s)
         self.assertIn("claude-future-9", text)
         self.assertIn("unpriced", text)
-        page = spend.render_html(s, date.today(), 7, False)
-        self.assertIn("Unpriced", page)
+        self.assertIn("unpriced", spend.render_html(s))
 
     def test_synthetic_lines_ignored(self):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", model="<synthetic>"),
                                        line("m2", "r2", inp=1_000_000)])
         _, s = run_summary(self.fx.root)
-        self.assertNotIn("<synthetic>", s["models"])
+        self.assertNotIn("<synthetic>", [m["model"] for m in s["models"]])
+        self.assertEqual(s["quality"]["zero_usage_skipped"], 1)
         self.assertAlmostEqual(s["total"], 2.00, places=6)
 
     def test_date_suffix_model_is_priced(self):
@@ -134,6 +255,22 @@ class SpendTests(unittest.TestCase):
         _, s = run_summary(self.fx.root)
         self.assertAlmostEqual(s["total"], (5 + 8 + 0.2) + 4 * 2 + 2 * 1.1, places=6)
 
+    def test_single_iteration_matches_top_level(self):
+        it = [{"type": "message", "input_tokens": 1_000_000, "output_tokens": 0}]
+        self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1_000_000, iterations=it)])
+        _, s = run_summary(self.fx.root)
+        self.assertAlmostEqual(s["total"], 2.00, places=6)
+
+    def test_advisor_iteration_priced_at_advisor_model(self):
+        it = [{"type": "message", "input_tokens": 1_000_000, "output_tokens": 0},
+              {"type": "advisor_message", "model": "claude-opus-5-5", "input_tokens": 1_000_000, "output_tokens": 0}]
+        self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1_000_000, iterations=it)])
+        _, s = run_summary(self.fx.root)
+        self.assertAlmostEqual(s["total"], 2.00 + 4.00, places=6)
+        self.assertAlmostEqual(model(s, "claude-opus-5-5")["cost"], 4.00, places=6)
+        self.assertEqual(model(s, "claude-opus-5-5")["responses"], 0)
+        self.assertEqual(model(s, "claude-sonnet-5-5")["responses"], 1)
+
     def test_half_written_last_line_skipped(self):
         good = line("m1", "r1", inp=1_000_000)
         half = line("m2", "r2", inp=1_000_000)[:-25]
@@ -152,13 +289,69 @@ class SpendTests(unittest.TestCase):
         self.fx.write("proj/s.jsonl", [
             line("m1", "r1", ts=yesterday_late, inp=1_000_000),
             line("m2", "r2", ts=today_early, inp=500_000)])
-        data, s = run_summary(self.fx.root)
+        _, s = run_summary(self.fx.root)
         self.assertAlmostEqual(s["total"], 1.00, places=6)              # only after local midnight
-        self.assertAlmostEqual(s["days"][date.today()], 1.00, places=6)
-        self.assertAlmostEqual(s["days"][date.today() - timedelta(days=1)], 2.00, places=6)
-        self.assertEqual(s["hours"][0], 1.00)
+        self.assertAlmostEqual(day(s, date.today())["total"], 1.00, places=6)
+        self.assertAlmostEqual(day(s, date.today() - timedelta(days=1))["total"], 2.00, places=6)
+        self.assertAlmostEqual(s["yesterday"], 2.00, places=6)
+        self.assertAlmostEqual(s["change"], -1.00, places=6)
+        self.assertAlmostEqual(s["average"], 3.00 / 7, places=6)
+        self.assertEqual(s["hours"][0]["total"], 1.00)
         _, y = run_summary(self.fx.root, day=date.today() - timedelta(days=1))
         self.assertAlmostEqual(y["total"], 2.00, places=6)
+
+    def test_requests_with_no_usage_counted(self):
+        self.fx.write("proj/s.jsonl", [
+            request("q1"), line("m1", "r1", inp=1000, ref="q1"),
+            request("q2"), user("[Request interrupted by user]"),
+            request("q3"), line("m3", "r3", inp=1000, ref="q3")] + [user("filler")] * 20 + [request("q4")])
+        _, s = run_summary(self.fx.root)
+        q = s["quality"]
+        self.assertEqual(q["requests_logged"], 4)
+        self.assertEqual(q["requests_no_usage"], 2)
+        self.assertEqual(q["requests_no_usage_why"], {"interrupted": 1, "end of file": 1})
+        self.assertEqual(q["requests_no_usage_by_day"][date.today().isoformat()], 2)
+        self.assertIn("Requests with no usage logged", spend.render_html(s))
+
+    def test_compactions_counted(self):
+        self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1000),
+                                       system(subtype="compact_boundary", compactMetadata={"preTokens": 150000})])
+        _, s = run_summary(self.fx.root)
+        self.assertEqual(s["quality"]["compactions"], 1)
+        self.assertEqual(s["quality"]["compacted_tokens"], 150000)
+
+    def test_tally_gap_from_cost_state(self):
+        # Claude Code's own tally says $3.00 for sonnet and $0.50 for haiku; transcripts logged $2.00.
+        self.fx.write("proj/closed.jsonl", [line("m1", "r1", inp=1_000_000, ts=today_at(10)),
+                                            cost_state(3.50, {"claude-sonnet-5-5": 3.00, "claude-haiku-5-5": 0.50})])
+        self.fx.write("proj/open.jsonl", [line("m2", "r2", inp=1_000_000, ts=today_at(11))])
+        _, s = run_summary(self.fx.root)
+        self.assertAlmostEqual(s["total"], 4.00, places=6)                  # headline stays logged usage
+        self.assertAlmostEqual(s["quality"]["not_logged"], 1.50, places=6)
+        self.assertEqual(s["quality"]["open_sessions"], 1)
+        self.assertAlmostEqual(model(s, "claude-haiku-5-5")["not_logged"], 0.50, places=6)
+        rows = {r["session"]: r for r in s["sessions"]}
+        self.assertAlmostEqual(rows["closed"]["not_logged"], 1.50, places=6)
+        self.assertIsNone(rows["open"]["not_logged"])
+
+    def test_json_shape(self):
+        self.fx.write("proj/s.jsonl", [user("hi"), line("m1", "r1", inp=1000)])
+        self.fx.write("proj/s/subagents/agent-a1.jsonl", [line("m2", "r2", inp=1000)])
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.fx.root}):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = spend.main(["--json"])
+        self.assertEqual(code, 0)
+        j = json.loads(buf.getvalue())
+        for k in ("date", "generated", "estimate_line", "total", "yesterday", "change", "average", "token_types",
+                  "models", "sessions", "subagents", "projects", "hours", "days", "quality", "prices_warning"):
+            self.assertIn(k, j)
+        self.assertEqual(len(j["hours"]), 24)
+        self.assertEqual(len(j["days"]), 7)
+        self.assertEqual(j["subagents"][0]["id"], "a1")
+        for k in ("files_read", "assistant_lines", "responses", "zero_usage_skipped", "requests_no_usage",
+                  "unpriced_models", "prices_date", "prices_age_days", "not_logged"):
+            self.assertIn(k, j["quality"])
 
     def test_empty_config_dir_message(self):
         empty = tempfile.mkdtemp()
@@ -182,15 +375,36 @@ class SpendTests(unittest.TestCase):
         self.assertIsNone(spend.stale_warning(fresh))
         self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1000)])
         _, s = run_summary(self.fx.root)
-        self.assertIn("Warning", spend.render_html(s, date.today(), 7, False, spend.stale_warning(old)))
+        self.assertIn("Warning", spend.render_html(s, False, spend.stale_warning(old)))
 
     def test_page_has_privacy_note_and_sections(self):
         self.fx.write("proj/s.jsonl", [user("secret prompt"), line("m1", "r1", inp=1000)])
         _, s = run_summary(self.fx.root)
-        page = spend.render_html(s, date.today(), 7, False)
-        for needle in ("Do not share it as-is", "By model", "By session", "By hour", "Last 7 days",
-                       "Tokens", "Estimate at API list prices"):
+        page = spend.render_html(s)
+        for needle in ("Do not share it as-is", "Where the money went", "By model", "Biggest sessions",
+                       "Biggest subagents", "By project", "By hour", "Last 7 days", "Data quality",
+                       "Estimate at API list prices", "secret prompt"):
             self.assertIn(needle, page)
+        self.assertEqual(page.count("serif"), page.count("sans-serif"))   # no serif font anywhere
+
+    def test_artifact_page(self):
+        self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1_000_000)])
+        art = os.path.join(self.fx.root, "artifact.html")
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.fx.root}), \
+                mock.patch.object(spend, "artifact_path", return_value=art):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = spend.main(["--artifact"])
+        self.assertEqual(code, 0)
+        self.assertIn(art, buf.getvalue())
+        page = Path(art).read_text(encoding="utf-8")
+        self.assertIn("<title>Claude Code Spend</title>", page)
+        self.assertIn(":root{--bg:", page)
+        self.assertIn('@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){', page)
+        self.assertIn(':root[data-theme="dark"]{', page)
+        self.assertIn("body{margin:0;background:var(--bg)", page)
+        self.assertNotIn("http-equiv", page)
+        self.assertNotIn("<script", page)
 
     def test_html_out_and_no_browser(self):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1_000_000)])

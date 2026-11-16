@@ -2,15 +2,19 @@ Build me a Claude Code skill called `claude-spend` that shows how much my Claude
 
 ## What I want to see
 
-1. Today's estimated spend in dollars, in my computer's local time zone, at the top in large type, with the time of the last update.
-2. Today's spend split by model.
-3. Today's spend split by session, one row per session: project folder, session start time, the first line of the session's first prompt (cut to 80 characters), the main session's own cost, the cost of its subagents, and the total. Most expensive first.
-4. Today's spend by hour, as a simple bar chart.
-5. The last 7 days, one bar per day.
-6. Token totals for today: input, output, cache writes and cache reads.
-7. Sessions with activity in the last 5 minutes marked "running", because subagents may still be working.
-8. A line under the total that reads: "Estimate at API list prices. On a Pro or Max plan this is what the same usage would cost on the API, not what you are billed."
-9. A visible note on the page that it contains my prompts and should not be shared as-is.
+The terminal output and the page show the same sections, detailed but easy to read. The terminal uses compact aligned tables; `--json` prints all of it as JSON for other tools.
+
+1. Header: today's estimated spend in dollars, in my computer's local time zone, in large type; the change from the day before; the average over the history; the time of the last update; the line "Estimate at API list prices. On a Pro or Max plan this is what the same usage would cost on the API, not what you are billed."; and a visible note that the page contains my prompts and should not be shared as-is.
+2. Where the money went: today's cost split by token type (output, cache reads, 5-minute cache writes, 1-hour cache writes, uncached input, web searches), in dollars and percent, with plain labels a non-technical reader understands and a one-line explanation each.
+3. By model: every model seen in the history, including models with $0 today, with today's cost, today's tokens by type, responses, and the history total. Unpriced models in their own rows with their tokens.
+4. Biggest sessions: the top 10 for the day, each with project folder, start time, the first line of its first real prompt (cut to 80 characters), the main session's cost, its subagents' cost, the number of subagents, the models used, the total, and a "running" badge when written to in the last 5 minutes.
+5. Biggest subagents: the top 15 for the day across all sessions, each with its name, parent session, the model that actually answered, cost, tokens, responses, start and end time and duration, and finished, running or stopped.
+6. By project folder for the day.
+7. By hour, stacked by model, with a legend.
+8. The last 7 days, stacked by model, with each day's total labelled.
+9. Data quality: files read, assistant lines read, responses after dedupe, zero-usage lines skipped, requests with no logged usage (count and why), compactions, the cost not written to transcripts (see below), unpriced models, and the date and age of the prices file.
+
+Design: one self-contained page, inline CSS and SVG, calm and simple: white background, deep green #267e5c for text and headings (normal weight, not bold), #7da595 for secondary text, #93bfae for thin rules, Arial or another sans-serif font only (no serif anywhere, nothing downloaded), chart series from those greens plus one grey for other models, with a dark mode built from the same greens on a very dark green-black background, light and dark mode via `prefers-color-scheme`, numbers right-aligned with thousands separators, readable at phone width with no sideways scrolling of the page (wide tables and charts scroll inside their own box).
 
 ## Where the data is
 
@@ -18,12 +22,16 @@ Build me a Claude Code skill called `claude-spend` that shows how much my Claude
 2. Subagent transcripts are in `<config>/projects/<project-folder>/<session-id>/subagents/agent-*.jsonl`. Count them under their parent session.
 3. Each line is a JSON object. Lines with `"type": "assistant"` carry `message.model`, `message.id`, `message.usage`, `requestId` and `timestamp` (UTC, ISO 8601). Convert timestamps to the computer's local time zone before deciding which day or hour they belong to, so a day ends at local midnight.
 4. `message.usage` has `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, and `cache_creation.ephemeral_5m_input_tokens` and `cache_creation.ephemeral_1h_input_tokens`. It may also have `server_tool_use.web_search_requests`, `server_tool_use.web_fetch_requests`, `speed` (for example `"fast"`) and `inference_geo` (for example `"us"`). When the 5-minute and 1-hour split is missing, price all cache writes as 5-minute writes. When the split adds up to less than `cache_creation_input_tokens`, price the rest as 5-minute writes.
-5. Duplicates: Claude Code writes the same response on several lines with identical usage. Count each `message.id` + `requestId` pair once across all files, or the totals come out far too high. In one real session file, 1,060 of 1,687 keys appeared more than once, always with identical usage. A line with no `message.id` has nothing to deduplicate on and is counted once as it stands.
-6. Lines with `"model": "<synthetic>"` carry zero usage. Ignore them: they are not a model, not a price and not an unpriced row.
-7. Model ids can end in a date, such as `claude-sonnet-5-5-20261101`. Match the price on the id with a trailing `-YYYYMMDD` removed when the full id has no entry.
-8. Before writing the parser, open two or three real files on this computer and confirm these field names. If a field is missing or named differently, adapt to what the files contain and say so in the README.
-9. Read files as UTF-8 with `errors="replace"`, one line at a time, so large files never load whole into memory. Skip any line that fails to parse and keep going: the last line of a live file is often half written. Open files read only. Never write to, lock, rename or delete a transcript: sessions are still writing to them.
-10. If no transcripts are found, print a plain message that says which folder was searched and that Claude Code on the web (claude.ai/code) runs in the cloud, so its sessions are not on this computer and cannot be counted. Exit with code 0. Do not show a traceback.
+5. Duplicates: Claude Code writes the same response on several lines with identical usage. Count each `message.id` + `requestId` pair once across all files, or the totals come out far too high. In one real session file, 1,060 of 1,687 keys appeared more than once, always with identical usage. If a later copy ever has different usage, keep the last one and count it in the data quality panel. A line with no `message.id` has nothing to deduplicate on and is counted once as it stands.
+6. `message.usage.iterations` lists every attempt the API made. One entry equals the top-level usage. An `advisor_message` entry is an advisor consultation billed at the advisor model's rates on top of the top-level usage: price it separately at its `model` (or the line's `advisorModel`). More than one non-advisor entry means a fallback; price each attempt.
+7. Subagents: each `agent-<id>.jsonl` has an `agent-<id>.meta.json` beside it with `description` (the agent's name), `agentType`, `model` (the model asked for) and `finished`. Name subagents from it; price them by the `message.model` that answered. When the meta file is missing, use the first line of the subagent's first prompt, or `agent-<id>`. Look for subagent files in folders below `subagents` too.
+8. Lines with `"model": "<synthetic>"` carry zero usage. Ignore them: they are not a model, not a price and not an unpriced row.
+9. Model ids can end in a date, such as `claude-sonnet-5-5-20261101`. Match the price on the id with a trailing `-YYYYMMDD` removed when the full id has no entry.
+10. Lines with `"type": "api-request"` are the requests Claude Code sent; an assistant line's `requestRef` names the request it answers. Count requests that never got a response line, and say why where the file shows it (a "[Request interrupted" user line just after, or the end of the file).
+11. Calls not in the transcript: Claude Code also makes calls it never writes to the transcript (compaction, titles, summaries, safety checks, memory). Lines with `"type": "system"` and `"subtype": "compact_boundary"` mark compactions, with `compactMetadata.preTokens`. When a session closes, Claude Code writes a `"type": "cost-state"` line to the main session file with `totalCostUSD` and `modelUsage.<model>.costUSD`, its own running tally, which includes those calls. Show the difference between the tally and the logged cost as a separate "not in transcripts" figure, per day and per model: for each pair of tally lines, the tally's increase minus the logged cost between them, spread over days in proportion to the logged cost. Never add it to the headline total. Sessions with usage after their last tally line are "open": say their extra cost is not known yet.
+12. Before writing the parser, open two or three real files on this computer and confirm these field names. If a field is missing or named differently, adapt to what the files contain and say so in the README.
+13. Read files as UTF-8 with `errors="replace"`, one line at a time, so large files never load whole into memory. Skip any line that fails to parse and keep going: the last line of a live file is often half written. Open files read only. Never write to, lock, rename or delete a transcript: sessions are still writing to them.
+14. If no transcripts are found, print a plain message that says which folder was searched and that Claude Code on the web (claude.ai/code) runs in the cloud, so its sessions are not on this computer and cannot be counted. Exit with code 0. Do not show a traceback.
 
 ## Prices
 
@@ -36,27 +44,28 @@ Build me a Claude Code skill called `claude-spend` that shows how much my Claude
 
 1. Skill folder: `~/.claude/skills/claude-spend/` (on Windows `%USERPROFILE%\.claude\skills\claude-spend\`) containing `SKILL.md`, `spend.py`, `prices.json`, `README.md`, `LICENSE` (MIT), `.gitignore` and a `tests` folder.
 2. `spend.py` uses the Python 3 standard library only, no installs, and works on macOS, Linux and Windows. Console output must not crash on characters the Windows console cannot show: replace them.
-3. `python3 spend.py` prints today's total, by model and the top 5 sessions to the terminal.
+3. `python3 spend.py` prints every section above to the terminal; `--json` prints them as JSON.
 4. `python3 spend.py --html` writes one self-contained `dashboard.html` (inline CSS and SVG, no outside scripts or fonts, a clean sans-serif font) to the skill folder, or to the path given by `--out`, opens it with `webbrowser`, and prints the file path whether or not a browser opened. When no browser exists it does not fail.
 5. `python3 spend.py --watch` rewrites the dashboard every 60 seconds, and the page reloads itself every 60 seconds.
-6. `--days N` changes the history from 7 days, `--date YYYY-MM-DD` shows a past day, `--no-open` skips the browser. Bad flags print a clear message and exit with a non-zero code. Success exits with 0.
-7. `SKILL.md` has a `name` and a `description` in its frontmatter. The description says to use the skill when I ask what I've spent, my cost today, or my token usage. The body says how to run the script and how to answer me: today's total first, then the biggest session, and the estimate line.
-8. `README.md` covers what it does, install, the commands, how cost is worked out, the dedupe rule, how to update `prices.json`, privacy, and that Claude Code on the web is not covered.
-9. A `.gitignore` containing `dashboard.html` and `__pycache__/`.
-10. A `tests` folder with a standard-library `unittest` suite using small made-up transcripts (no real data) that covers: dedupe, subagent attribution to the parent session, an unknown model going to unpriced, `<synthetic>` lines ignored, the long-context tier, a half-written last line skipped, date filtering across local midnight, and the empty-config-folder message.
+6. `python3 spend.py --artifact` writes the same page to `artifact.html` in the skill folder, with no auto-refresh, a `<title>` of "Claude Code Spend", every colour as a token on `:root`, dark mode redefined under `@media (prefers-color-scheme: dark)` guarded by `:root:not([data-theme="light"])` and again under `:root[data-theme="dark"]`, and an explicit body background. It prints the file path.
+7. `--days N` changes the history from 7 days, `--date YYYY-MM-DD` shows a past day, `--no-open` skips the browser. Bad flags print a clear message and exit with a non-zero code. Success exits with 0.
+8. `SKILL.md` has a `name` and a `description` in its frontmatter. The description says to use the skill when I ask what I've spent, my cost today, my token usage, or for my dashboard. The body says: run `python3 spend.py --artifact`; if an Artifact tool is available, publish `artifact.html` as an artifact (the first time with no url and icon "chart", saving the returned URL to `.artifact-url` in the skill folder; every later time republishing to the saved URL so the same link updates; if that artifact no longer exists or the publish is refused, publishing a new one and overwriting `.artifact-url`), then give me the link; with no Artifact tool, run `--html` and give me the path. Then answer in short text: today's total, the biggest sessions, the biggest subagents by name, every model, the not-in-transcripts figure when there is one, and the estimate line.
+9. `README.md` covers what it does, install, the commands, how cost is worked out, the dedupe rule, how to update `prices.json`, privacy, and that Claude Code on the web is not covered.
+10. A `.gitignore` containing `dashboard.html`, `artifact.html`, `.artifact-url` and `__pycache__/`.
+11. A `tests` folder with a standard-library `unittest` suite using small made-up transcripts (no real data) that covers: dedupe, a duplicate with different usage keeping the last line, subagent attribution to the parent session, subagent naming from the meta file and without one, the token-type split, every model listed including $0-today models, an advisor iteration priced at the advisor model, an unknown model going to unpriced, `<synthetic>` lines ignored, the long-context tier, requests with no usage counted, the cost-state tally gap, a half-written last line skipped, date filtering across local midnight, the `--json` shape, the `--artifact` page (title, `:root` tokens, both dark-mode blocks, no auto-refresh), and the empty-config-folder message.
 
 ## Privacy
 
 1. Nothing is sent anywhere. The script makes no network calls. Only building `prices.json` reads the pricing page.
-2. `dashboard.html` holds my prompts and project folder names. It is in `.gitignore`, the page says not to share it as-is, and it is never committed or published.
+2. `dashboard.html` and `artifact.html` hold my prompts, agent names and project folder names. They are in `.gitignore`, the page says not to share it as-is, and they are never committed. The artifact is published only to my own Claude account, where it is private.
 
 ## Check before you tell me it's done
 
 1. Run `python3 spend.py` and show me its output.
-2. Pick one session from today. Add up its deduplicated usage by hand in a separate one-off script, and show that it matches the dashboard's number for that session.
+2. Write a separate one-off recount script that does not import the skill's code. For today and one busier past day, show its per-model and per-session totals beside the skill's, matching to the cent, or explain every difference.
 3. Show the count of assistant lines read today and the count after dedupe.
-4. Run `--html`, open the page and confirm every section appears.
+4. Run `--artifact` and `--html`, open the page at desktop width, at phone width and in dark mode, and confirm every section appears and nothing overflows the page.
 5. Search the skill folder for my username, my home path and anything that looks like a key, and show that nothing turns up.
 6. Run the test suite and show that it passes.
 
-Then tell me today's total, the model and the session that cost the most, and the path to the dashboard.
+Then tell me today's total, the model, session and subagent that cost the most, the not-in-transcripts figure, and the path to the dashboard.
