@@ -1,42 +1,69 @@
 # claude-spend
 
-See how much your Claude Code usage cost today, subagents included.
+See what your Claude Code usage cost today, subagents included.
 
-You get one number for today, plus a simple page that breaks it down: what the money paid for, every model, your biggest sessions, your biggest subagents (by name), by project, by hour, and over the last 7 days.
+It reads the logs Claude Code already keeps on your computer and works out the cost at API prices.
 
-If your Claude can make artifacts, you also get a private link on your Claude account that shows the latest numbers each time you ask.
+## What you get
 
-## Install (about 2 minutes)
+A page with the full picture for the day:
 
-1. Open the Claude desktop app.
-2. Start a Claude Code session on any folder on your computer.
-3. Copy this whole message and send it to Claude:
+- Today's total, compared with the last 30 days
+- TLDR: what stood out, what it means, and the top 3 tips to reduce spend
+- Cost by type: what the money paid for, such as output, re-reading and caching
+- Cost by model
+- Biggest sessions
+- Biggest subagents, by name
+- Cost by day for the last 7 days
+- Cost by hour for today
+- The math be mathing: how it was counted
+
+Claude also answers in a few lines in the chat: the total, the biggest sessions, the biggest subagents and every model used.
+
+If your Claude can make artifacts, the page is saved to your Claude account as a private link. Each time you ask, the same link shows the latest numbers. If not, the page opens in your browser.
+
+## Install
+
+1. Open Claude Code on your computer, in the desktop app or a terminal, in any folder.
+2. Send Claude this message:
 
 ```
-Install the claude-spend skill: clone https://github.com/kgsubs/claude-spend into ~/.claude/skills/claude-spend (on Windows: %USERPROFILE%\.claude\skills\claude-spend). If git isn't installed, download the repo as a zip and unzip it there instead. Then tell me what I've spent today.
+Install the claude-spend skill: clone https://github.com/kgsubs/claude-spend into ~/.claude/skills/claude-spend (on Windows: %USERPROFILE%\.claude\skills\claude-spend). If git isn't installed, download https://github.com/kgsubs/claude-spend/archive/refs/heads/main.zip and put the files from its claude-spend-main folder there instead. Then tell me what I've spent today.
 ```
 
-4. If Claude asks for permission, say yes.
+3. If Claude asks for permission, say yes.
 
-That's it. Claude installs it and tells you today's total.
+Claude installs it and tells you today's total. If Claude doesn't seem to know the skill yet, start a new Claude Code session.
+
+It needs Python 3. Most computers already have it. If Claude says it's missing, ask Claude to help you install it. Nothing else is needed.
 
 ## Use it
 
-Ask Claude any of these:
+Ask Claude:
 
 - "What have I spent today?"
 - "Show me my spend dashboard."
 - "What did I spend yesterday?"
 
+To run it yourself, open a terminal in the skill folder and run:
+
+```
+python3 spend.py
+```
+
+On Windows, use `python spend.py`.
+
 ## Good to know
 
-- **It's an estimate.** The dollars are what your usage would cost at Anthropic's API prices. On a Pro or Max plan you don't pay this amount; it's what the same work would cost on the API.
-- **It only works for Claude Code on your own computer**, in the Claude desktop app or a terminal. It can't see the regular Claude chat, or Claude Code in the browser (claude.ai/code), because those run on Anthropic's computers.
-- **Power users: it works on a VPS or any server too.** If you run Claude Code on a Linux server, install it the same way and ask the same questions. The server has no browser, so view the dashboard page the way [DETAILS.md](DETAILS.md#on-a-vps-or-server) shows.
-- **It needs Python 3.** Most computers already have it. If Claude says it's missing, ask Claude to help you install it.
-- **It's private.** The numbers stay on your computer unless you use the artifact link, which is private to your Claude account. The page shows your own prompts, so don't share it as is.
-- **Some calls aren't written down.** Claude Code makes a few behind-the-scenes calls (like summarizing a long chat) that it doesn't save in its logs. Their cost is included in the totals, from Claude Code's own tally, once a session is closed. A session still open is added when it closes.
-- **New session?** If Claude doesn't seem to know the skill right after installing, start a new Claude Code session.
+- It's an estimate at API prices. On a Pro or Max plan you don't pay this. It's what the same work would cost on the API. Prices come from Anthropic's pricing page.
+- Background calls are included. Claude Code makes some calls on its own, like summarizing a long session, and doesn't save them in its logs. Their cost is added from Claude Code's own running total once a session closes. A session still open is added when it closes.
+- It only sees Claude Code on your own computer. It can't see the regular Claude chat or Claude Code on the web (claude.ai/code), because those run on Anthropic's computers.
+
+## Privacy
+
+Everything stays on your computer. The script doesn't connect to the internet; it only reads Claude Code's logs. The one exception is the artifact link, which is private to your Claude account.
+
+The page shows your messages, subagent names and project folders, so don't share it as is.
 
 ## Update or remove
 
@@ -45,7 +72,7 @@ Ask Claude any of these:
 
 ## More
 
-- Commands, the cost math and how prices are kept current: [DETAILS.md](DETAILS.md)
+- All the commands, how the cost is worked out, keeping prices current and running it on a server: [DETAILS.md](DETAILS.md)
 - Want Claude to build its own version from scratch instead? Use [PROMPT.md](PROMPT.md).
 
-MIT license, see [LICENSE](LICENSE).
+MIT license. See [LICENSE](LICENSE).
