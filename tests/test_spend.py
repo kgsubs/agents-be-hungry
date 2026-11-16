@@ -466,7 +466,7 @@ class SpendTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(art, buf.getvalue())
         page = Path(art).read_text(encoding="utf-8")
-        self.assertIn("<title>Claude Code Spend</title>", page)
+        self.assertIn("<title>Agents Be Hungry - yet another Claude Code spend tool</title>", page)
         self.assertIn(":root{", page)
         self.assertIn("--green:#267e5c", page)
         self.assertIn("color-scheme:light", page)
@@ -867,7 +867,7 @@ class SpendTests(unittest.TestCase):
         self.assertEqual([x[1] for x in stats], ["vs. 30-day average by now", "30-day daily average"])
         self.assertNotIn("<span>Updated</span>", page)
         stamp = "Updated " + spend.when(s["generated"], "")
-        self.assertIn('Claude Code Spend<span title="When this page was made.">{}</span><span>{}</span></a>'.format(stamp, spend.LOCAL_LINE), page)
+        self.assertIn(spend.PAGE_TITLE + '<span title="When this page was made.">{}</span><span>{}</span></a>'.format(stamp, spend.LOCAL_LINE), page)
         self.assertIn('<span class="mobile-updated" title="When this page was made.">{}</span>'.format(stamp), page)
         self.assertEqual(page.count(stamp), 2)                # sidebar and top bar, not the stats
         css = spend._asset("page.css")
@@ -954,7 +954,7 @@ class PageTests(unittest.TestCase):
             self.assertIsNone(FORBIDDEN.search(p.read_text(encoding="utf-8", errors="replace")), p)
 
     def test_sidebar_brand(self):
-        self.assertIn('<a class="brand" href="#overview">Claude Code Spend<span title="When this page was made.">Updated ', self.page)
+        self.assertIn('<a class="brand" href="#overview">' + spend.PAGE_TITLE + '<span title="When this page was made.">Updated ', self.page)
 
     def test_no_overview_nav_and_icon_only_menu_button(self):
         nav = re.search(r'<nav class="journey-nav".*?</nav>', self.page, re.S).group(0)

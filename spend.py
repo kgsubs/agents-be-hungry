@@ -37,7 +37,7 @@ HIDDEN_LINE = ("Hidden background calls: Claude Code also works behind the scene
                "Their cost comes from Claude Code's own running total once a session closes, "
                "and is included in every total.")
 TOKEN_LINE = "Tokens are word pieces. One token is about 3/4 of a word."
-PAGE_TITLE = "Claude Code Spend"
+PAGE_TITLE = "Agents Be Hungry - yet another Claude Code spend tool"
 RUNNING_SECONDS = 300
 STALE_DAYS = 60
 TOP_SESSIONS = 10
@@ -1729,7 +1729,7 @@ def render_html(s, refresh=False, warning=None):
          '<meta name="color-scheme" content="light">']
     if refresh:
         p.append('<meta http-equiv="refresh" content="60">')
-    p.append("<title>{}</title><style>\n{}</style></head><body>".format(PAGE_TITLE, _asset("page.css")))
+    p.append("<title>{}</title><style>\n{}</style></head><body>".format(esc(PAGE_TITLE), _asset("page.css")))
     p.append(SPRITE)
     p.append('<a class="skip" href="#main">Skip to content</a>')
 
