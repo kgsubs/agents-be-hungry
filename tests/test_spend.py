@@ -210,8 +210,10 @@ class SpendTests(unittest.TestCase):
         self.assertEqual(h["cost"], 0.0)
         self.assertEqual(h["responses"], 0)
         self.assertAlmostEqual(h["window_cost"], 0.005, places=6)
-        self.assertIn("claude-haiku-5-5", spend.render_text(s))
-        self.assertIn("claude-haiku-5-5", spend.render_html(s))
+        self.assertIn("Haiku 5.5", spend.render_text(s))
+        page = spend.render_html(s)
+        self.assertIn("Haiku 5.5", page)
+        self.assertIn('title="claude-haiku-5-5"', page)       # full id kept as a tooltip
 
     def test_unknown_model_goes_to_unpriced(self):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", model="claude-future-9", inp=1000, out=500),
@@ -224,8 +226,8 @@ class SpendTests(unittest.TestCase):
         self.assertIn("claude-future-9", s["quality"]["unpriced_models"])
         text = spend.render_text(s)
         self.assertIn("claude-future-9", text)
-        self.assertIn("unpriced", text)
-        self.assertIn("unpriced", spend.render_html(s))
+        self.assertIn("no price", text)
+        self.assertIn("no price", spend.render_html(s))
 
     def test_synthetic_lines_ignored(self):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", model="<synthetic>"),
@@ -311,7 +313,7 @@ class SpendTests(unittest.TestCase):
         self.assertEqual(q["requests_no_usage"], 2)
         self.assertEqual(q["requests_no_usage_why"], {"interrupted": 1, "end of file": 1})
         self.assertEqual(q["requests_no_usage_by_day"][date.today().isoformat()], 2)
-        self.assertIn("Requests with no usage logged", spend.render_html(s))
+        self.assertIn("Calls with no cost saved", spend.render_html(s))
 
     def test_compactions_counted(self):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1000),
@@ -363,7 +365,7 @@ class SpendTests(unittest.TestCase):
                     code = spend.main([])
             out = buf.getvalue()
             self.assertEqual(code, 0)
-            self.assertIn("No Claude Code transcripts found", out)
+            self.assertIn("No Claude Code logs found", out)
             self.assertIn(os.path.join(root, "projects"), out)
             self.assertIn("claude.ai/code", out)
             self.assertIn("cloud", out)
@@ -381,9 +383,9 @@ class SpendTests(unittest.TestCase):
         self.fx.write("proj/s.jsonl", [user("secret prompt"), line("m1", "r1", inp=1000)])
         _, s = run_summary(self.fx.root)
         page = spend.render_html(s)
-        for needle in ("Do not share it as-is", "Where the money went", "By model", "Biggest sessions",
-                       "Biggest subagents", "By project", "By hour", "Last 7 days", "Data quality",
-                       "Estimate at API list prices", "secret prompt"):
+        for needle in ("Don&#x27;t share it as is", "Where the money went", "By model", "Biggest sessions",
+                       "Biggest helper agents", "By project", "By hour", "Last 7 days", "How this was counted",
+                       "This is an estimate at API prices", "secret prompt"):
             self.assertIn(needle, page)
         self.assertEqual(page.count("serif"), page.count("sans-serif"))   # no serif font anywhere
 
@@ -427,22 +429,24 @@ class SpendTests(unittest.TestCase):
         s, t = self.tl()
         self.assertFalse(t["empty"])
         self.assertTrue(2 <= len(t["findings"]) <= 3)
-        self.assertEqual(t["findings"][0], "Re-reading the conversation was 50% of today's cost.")
-        self.assertIn("sonnet-5-5 did 100% of the spend", t["findings"][1])
+        self.assertEqual(t["findings"][0], "50% of today's cost was Claude re-reading the chat.")
+        self.assertEqual(t["findings"][1], "Sonnet 5.5 was 100% of the cost.")
+        self.assertEqual(t["findings"][2], "Your biggest session cost $20.00, 100% of the day.")
         self.assertIn("re-reading", t["meaning"])
 
     def test_tldr_rule_a_reread(self):
         self.fx.write("proj/s.jsonl", [user("long"), line("m1", "r1", cr=100_000_000, inp=5_000_000)])
         _, t = self.tl()
         r = t["recommendations"][0]
-        self.assertIn("fresh session", r["action"])
+        self.assertIn("new session", r["action"])
+        self.assertIn("Your longest session re-reads", r["action"])            # singular reads naturally
         self.assertAlmostEqual(r["saving_usd"], 5.00, places=6)     # half of $10 of cache reads
         self.assertIn("$10.00 x 0.50", r["basis"])
 
     def test_tldr_rule_a_needs_large_share(self):
         self.fx.write("proj/s.jsonl", [user("x"), line("m1", "r1", cr=1_000_000, inp=5_000_000)])
         _, t = self.tl()
-        self.assertFalse(any("fresh session" in r["action"] for r in t["recommendations"]))
+        self.assertFalse(any("new session" in r["action"] for r in t["recommendations"]))
 
     def test_tldr_rule_b_opus_subagents(self):
         self.fx.write("proj/s.jsonl", [user("p"), line("m1", "r1", inp=1_000_000)])
@@ -452,6 +456,7 @@ class SpendTests(unittest.TestCase):
         r = next(r for r in t["recommendations"] if "Sonnet" in r["action"])
         self.assertAlmostEqual(r["saving_usd"], 2.00, places=6)     # $4.00 on Opus, $2.00 at Sonnet prices
         self.assertIn("BIG JOB ($4.00)", r["action"])
+        self.assertIn("1 helper ran on Opus", r["action"])
         self.assertIn("$4.00 - $2.00 = $2.00", r["basis"])
 
     def test_tldr_rule_c_one_hour_writes(self):
@@ -467,7 +472,7 @@ class SpendTests(unittest.TestCase):
             self.fx.write("proj/s/subagents/agent-{}.jsonl".format(i), [line("a{}".format(i), "q{}".format(i), inp=1_000_000)])
             self.fx.meta("proj/s/subagents/agent-{}.meta.json".format(i), description="AGENT {}".format(i), finished=True)
         _, t = self.tl()
-        r = next(r for r in t["recommendations"] if "Check whether these subagents" in r["action"])
+        r = next(r for r in t["recommendations"] if "Check if these helper agents" in r["action"])
         self.assertEqual(r["saving_usd"], 0.0)
         self.assertIn("AGENT 1", r["action"])
 
@@ -498,11 +503,23 @@ class SpendTests(unittest.TestCase):
             self.assertIn(k, t["recommendations"][0])
         self.assertEqual(json.loads(json.dumps(s))["tldr"], t)
         text = spend.render_text(s)
-        self.assertLess(text.index("TLDR"), text.index("Estimate at API list prices"))
+        self.assertLess(text.index("TLDR"), text.index("This is an estimate at API prices"))
         page = spend.render_html(s)
-        self.assertIn("Top 3 ways to spend less", page)
-        self.assertIn('title="Cache reads in the 1 longest main sessions', page)
+        self.assertIn("Best way to spend less", page)                 # one tip: singular heading
+        self.assertIn('title="Re-reading in your longest session cost $10.00', page)
         self.assertLess(page.index("TLDR"), page.index("Where the money went"))
+
+    def test_plain_helpers(self):
+        self.assertEqual(spend.plural(1, "session"), "1 session")
+        self.assertEqual(spend.plural(2, "session"), "2 sessions")
+        self.assertEqual(spend.plural(3, "search", "searches"), "3 searches")
+        self.assertEqual(spend.model_name("claude-opus-5-5"), "Opus 5.5")
+        self.assertEqual(spend.model_name("claude-sonnet-5-5-20261101"), "Sonnet 5.5")
+        self.assertEqual(spend.model_name("claude-3-5-sonnet-20241022"), "3.5 Sonnet")
+        self.assertEqual(spend.time_range("2026-01-01T23:30:00", "2026-01-01T23:53:00"), "11:30-11:53 pm")
+        self.assertEqual(spend.time_range("2026-01-01T11:50:00", "2026-01-01T12:10:00"), "11:50 am-12:10 pm")
+        self.assertEqual(spend.day_name(date.today().isoformat()).split(",")[0], "Today")
+        self.assertEqual(spend.change_text(-1.5, "yesterday"), "$1.50 less than yesterday")
 
     def test_html_out_and_no_browser(self):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1_000_000)])

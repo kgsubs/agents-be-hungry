@@ -27,10 +27,14 @@ from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ESTIMATE_LINE = ("Estimate at API list prices. On a Pro or Max plan this is what "
-                 "the same usage would cost on the API, not what you are billed.")
-PRIVACY_LINE = ("This page contains your prompts, agent names and project folder names. "
-                "Do not share it as-is.")
+ESTIMATE_LINE = ("This is an estimate at API prices. On a Pro or Max plan, you don't pay this; "
+                 "it's what the same work would cost on the API.")
+PRIVACY_LINE = ("This page shows your messages, agent names and project folders. "
+                "Don't share it as is.")
+HIDDEN_LINE = ("Hidden background calls: Claude Code also works behind the scenes (shrinking long chats, "
+               "naming sessions, safety checks) and doesn't save those calls in its logs. "
+               "Their cost comes from Claude Code's own running total, once a session closes.")
+TOKEN_LINE = "Tokens are word pieces. One token is about 3/4 of a word."
 PAGE_TITLE = "Claude Code Spend"
 RUNNING_SECONDS = 300
 STALE_DAYS = 60
@@ -43,19 +47,24 @@ INTERRUPT_MARK = "[Request interrupted"
 
 # Where the money went: key, plain label, one-line explanation. Order is the display order.
 COST_TYPES = (
-    ("output", "Writing",
-     "Text, code, tool calls and thinking that Claude wrote."),
-    ("cache_read", "Re-reading the conversation",
-     "Each turn Claude reads the conversation so far again, from a cheap cache."),
-    ("cache_write_5m", "Saving to the 5-minute cache",
-     "New context stored so the next turns can re-read it cheaply for 5 minutes."),
-    ("cache_write_1h", "Saving to the 1-hour cache",
-     "The same, kept for an hour, at a higher price."),
-    ("input", "New input, not cached",
-     "Text sent to Claude that was not read from or saved to the cache."),
+    ("output", "Claude's replies",
+     "Everything Claude writes: answers, code, tool use and thinking."),
+    ("cache_read", "Claude re-reading the chat",
+     "Every turn, Claude reads the whole chat again. Cheap per token, but it adds up in long sessions."),
+    ("cache_write_5m", "Short-term memory (5 min)",
+     "Saving new chat so the next turns can re-read it cheaply for 5 minutes."),
+    ("cache_write_1h", "Longer memory (1 hour)",
+     "The same, kept for 1 hour. Costs more to save."),
+    ("input", "New text sent",
+     "Text sent to Claude that wasn't saved to memory."),
     ("searches", "Web searches",
-     "Searches Claude ran on the web, charged per search."),
+     "Searches Claude ran on the web. Charged per search."),
 )
+# The same, as words inside a sentence ("48% of today's cost was ...").
+COST_PHRASES = {"output": "Claude's replies", "cache_read": "Claude re-reading the chat",
+                "cache_write_5m": "saving to short-term memory (5 min)",
+                "cache_write_1h": "saving to longer memory (1 hour)",
+                "input": "new text sent", "searches": "web searches"}
 
 
 # ---------------------------------------------------------------- prices
@@ -79,9 +88,9 @@ def stale_warning(prices, today=None):
     """A warning string when prices.json is old or undated, else None."""
     age = price_age_days(prices, today)
     if age is None:
-        return "prices.json has no valid date_read, so its age is unknown. Refresh it from " + str(prices.get("source_url", "the pricing page")) + "."
+        return "prices.json has no date, so its age is unknown. Update it from " + str(prices.get("source_url", "the pricing page")) + "."
     if age > STALE_DAYS:
-        return ("prices.json was read {} days ago ({}). Prices may have changed; refresh it from {}."
+        return ("Prices were last checked {} days ago ({}) and may have changed. Update prices.json from {}."
                 .format(age, prices.get("date_read"), prices.get("source_url", "the pricing page")))
     return None
 
@@ -194,12 +203,12 @@ def config_dir():
 
 
 def no_transcripts_message(root):
-    return ("No Claude Code transcripts found.\n"
+    return ("No Claude Code logs found on this computer.\n"
             "Looked in: {}\n"
-            "Claude Code writes sessions there when it runs on this computer. "
-            "Claude Code on the web (claude.ai/code) runs in the cloud, so its sessions "
-            "are not on this computer and cannot be counted here.\n"
-            "If your Claude config folder is somewhere else, set CLAUDE_CONFIG_DIR to it."
+            "Claude Code saves its sessions there when it runs on this computer. "
+            "Claude Code on the web (claude.ai/code) runs in the cloud, so those sessions "
+            "aren't here and can't be counted.\n"
+            "If your Claude folder is somewhere else, set CLAUDE_CONFIG_DIR to it."
             ).format(os.path.join(root, "projects"))
 
 
@@ -561,7 +570,7 @@ INFO_SHARE = 0.30         # top subagents as a share of the day, or calls not in
 
 
 def _short(m):
-    return m.replace("claude-", "")
+    return model_name(m)
 
 
 def _sonnet_price(prices):
@@ -569,12 +578,12 @@ def _sonnet_price(prices):
     return prices["models"][keys[-1]] if keys else None, (keys[-1] if keys else None)
 
 
-def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality):
+def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality, day="today's"):
     """Findings, meaning and up to three ways to spend less, from fixed rules over the day's numbers.
     No model call, no network. Savings are estimates at the prices in prices.json."""
     if total < MIN_TLDR_TOTAL or not sess_rows:
         return {"empty": True, "findings": [],
-                "meaning": "Too little spend today for a summary (under $1.00, or no sessions).",
+                "meaning": "Too little spend for a summary (under $1.00).",
                 "recommendations": []}
     prices = data["prices"]
     pct = lambda v: 100.0 * v / total
@@ -583,22 +592,22 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
     findings = []
     top = max(token_types, key=lambda t: t["cost"])
     if top["cost"] > 0:
-        findings.append("{} was {:.0f}% of today's cost.".format(top["label"], top["percent"]))
+        findings.append("{:.0f}% of {} cost was {}.".format(top["percent"], day, COST_PHRASES[top["key"]]))
     priced = [m for m in model_rows if m["priced"] and m["cost"] > 0]
     if priced:
         tm = priced[0]
-        line = "{} did {:.0f}% of the spend".format(_short(tm["model"]), pct(tm["cost"]))
+        line = "{} was {:.0f}% of the cost.".format(_short(tm["model"]), pct(tm["cost"]))
         if sub_rows:
             on = sum(1 for r in sub_rows if tm["model"] in r["models"])
-            line += "; {} of {} subagents ran on it".format(on, len(sub_rows))
-        findings.append(line + ".")
+            line += " {} of {} used it.".format(on, plural(len(sub_rows), "helper agent"))
+        findings.append(line)
     sub_total = sum(r["cost"] for r in sub_rows)
     if sub_rows and pct(sub_total) >= 10:
-        findings.append("Subagents were {:.0f}% of the cost ({} across {} agents).".format(
-            pct(sub_total), money(sub_total), len(sub_rows)))
+        findings.append("Helper agents were {:.0f}% of the cost: {} across {}.".format(
+            pct(sub_total), money(sub_total), plural(len(sub_rows), "agent")))
     else:
         b = sess_rows[0]
-        findings.append("The biggest session cost {} ({:.0f}% of the day).".format(money(b["total"]), pct(b["total"])))
+        findings.append("Your biggest session cost {}, {:.0f}% of the day.".format(money(b["total"]), pct(b["total"])))
 
     # ways to spend less
     recs = []
@@ -615,11 +624,12 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
         base = sum(v for _, v in longest)
         sv = base * REREAD_CUT
         if sv >= MIN_SAVING:
-            recs.append({"action": "Start a fresh session, or compact sooner, when you move to a new topic. "
-                                   "The {} longest sessions re-read their history every turn.".format(len(longest)),
+            yours = "Your longest session" if len(longest) == 1 else "Your {} longest sessions".format(len(longest))
+            recs.append({"action": "Start a new session when you switch topics, or type /compact to shrink a long one. "
+                                   "{} {} the whole chat on every turn.".format(yours, "re-reads" if len(longest) == 1 else "re-read"),
                          "saving_usd": sv,
-                         "basis": "Cache reads in the {} longest main sessions cost {}; a fresh start is assumed to cut about {:.0f}% of that: {} x {:.2f} = {}.".format(
-                             len(longest), money(base), 100 * REREAD_CUT, money(base), REREAD_CUT, money(sv))})
+                         "basis": "Re-reading in {} cost {}. A fresh start is assumed to cut about {:.0f}% of that: {} x {:.2f} = {}.".format(
+                             yours.lower(), money(base), 100 * REREAD_CUT, money(base), REREAD_CUT, money(sv))})
 
     # b. Opus subagents priced at Sonnet
     sp, sname = _sonnet_price(prices)
@@ -639,10 +649,10 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
             if sv >= MIN_SAVING:
                 names = ", ".join("{} ({})".format(ids.get((data["agents"].get(a) or {}).get("id"), "agent"), money(c))
                                   for a, c, _ in rows[:3])
-                recs.append({"action": "Run routine subagents on Sonnet instead of Opus. {} subagent{} ran on Opus; biggest: {}.".format(
-                                 len(rows), "" if len(rows) == 1 else "s", names),
+                recs.append({"action": "Use Sonnet, not Opus, for routine helper agents. {} ran on Opus. Biggest: {}.".format(
+                                 plural(len(rows), "helper"), names),
                              "saving_usd": sv,
-                             "basis": "Opus subagents cost {}; the same tokens at {} prices cost {}: {} - {} = {}.".format(
+                             "basis": "Helper agents on Opus cost {}. The same work at {} prices: {}. {} - {} = {}.".format(
                                  money(opus_cost), _short(sname), money(son_cost), money(opus_cost), money(son_cost), money(sv))})
 
     # c. 1-hour cache writes at the 5-minute rate
@@ -657,10 +667,10 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
         h1 += r["parts"]["cache_write_1h"]
         h5 += r["parts"]["cache_write_1h"] * pr["cache_write_5m"] / pr["cache_write_1h"]
     if h1 - h5 >= MIN_SAVING:
-        recs.append({"action": "Keep the cache for 5 minutes instead of an hour where long waits are rare. "
-                               "1-hour cache writes cost more per token.",
+        recs.append({"action": "Use short-term memory (5 min) instead of longer memory (1 hour), "
+                               "unless you often pause for more than 5 minutes. Longer memory costs more to save.",
                      "saving_usd": h1 - h5,
-                     "basis": "1-hour cache writes cost {}; the same tokens at the 5-minute rate cost {}: {} - {} = {}.".format(
+                     "basis": "Saving to longer memory cost {}. The same at the 5-minute rate: {}. {} - {} = {}.".format(
                          money(h1), money(h5), money(h1), money(h5), money(h1 - h5))})
 
     recs.sort(key=lambda r: -r["saving_usd"])
@@ -669,29 +679,29 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
     tops = [r for r in sub_rows[:3] if r["cost"] > 0]
     tcost = sum(r["cost"] for r in tops)
     if len(sub_rows) >= 3 and tcost / total >= INFO_SHARE and tcost >= 1.0:
-        info.append({"action": "Check whether these subagents needed to run: {}.".format(
+        info.append({"action": "Check if these helper agents needed to run: {}.".format(
                          ", ".join("{} ({})".format(r["name"], money(r["cost"])) for r in tops)),
                      "saving_usd": 0.0,
-                     "basis": "The 3 costliest subagents cost {}, {:.0f}% of the day. No saving is estimated.".format(money(tcost), pct(tcost))})
+                     "basis": "Your 3 costliest helper agents cost {}, {:.0f}% of the day. No saving estimated.".format(money(tcost), pct(tcost))})
     nl = quality["not_logged"] or 0.0
     if nl / total >= 0.10:
-        info.append({"action": "Calls Claude Code makes in the background (compaction, titles, summaries) were "
-                               "{:.0f}% of the logged total; fewer long sessions means fewer compactions.".format(pct(nl)),
+        info.append({"action": "Hidden background calls (like shrinking long chats) added {:.0f}% on top. "
+                               "Fewer long sessions means fewer of them.".format(pct(nl)),
                      "saving_usd": 0.0,
-                     "basis": "Claude Code's own tally has {} that the transcripts do not hold, {:.0f}% of {}. No saving is estimated.".format(
+                     "basis": "Claude Code's own running total shows {} not in its logs, {:.0f}% of {}. No saving estimated.".format(
                          money(nl), pct(nl), money(total))})
     recs = (recs + info)[:3]
     saved = sum(r["saving_usd"] for r in recs)
 
     # meaning
     if top["key"] == "cache_read" and top["percent"] >= 40:
-        m1 = "Most of the cost is Claude re-reading the conversation on every turn, so how long a session runs moves the bill more than how much Claude writes."
+        m1 = "Most of your cost is Claude re-reading the chat on every turn. Long sessions cost more than long replies."
     elif top["key"] == "output" and top["percent"] >= 40:
-        m1 = "Most of the cost is what Claude writes, so the model price per token and how much each agent produces matter most."
+        m1 = "Most of your cost is Claude's replies. The model you pick and how much each agent writes matter most."
     else:
-        m1 = "The largest part of the cost is {}.".format(top["label"].lower())
-    m2 = ("The changes below could save about {} of today's {}.".format(money(saved), money(total))
-          if saved > 0 else "None of the saving rules found an estimate for today's pattern.")
+        m1 = "Your biggest cost is {}.".format(COST_PHRASES[top["key"]])
+    m2 = ("The tips below could have saved about {} of {} {}.".format(money(saved), day, money(total))
+          if saved > 0 else "No savings found in {} pattern.".format(day))
     return {"empty": False, "findings": findings, "meaning": m1 + " " + m2, "recommendations": recs}
 
 
@@ -892,7 +902,8 @@ def summarize(data, target, ndays=7, now=None):
         "token_types": token_types, "models": model_rows, "sessions": sess_rows,
         "subagents": sub_rows, "projects": proj_rows, "hours": hours, "days": days,
         "chart_series": series, "quality": quality,
-        "tldr": build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality),
+        "tldr": build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality,
+                           "today's" if target == date.today() else "the day's"),
     }
 
 
@@ -918,15 +929,104 @@ def short_num(x):
     return str(int(x))
 
 
+def plural(n, word, many=None):
+    """'1 session', '2 sessions'."""
+    return "{} {}".format(num(n), word if n == 1 else (many or word + "s"))
+
+
+def model_name(m):
+    """'claude-opus-5-5' -> 'Opus 5.5'; 'claude-3-5-sonnet-20241022' -> '3.5 Sonnet'."""
+    if not m:
+        return ""
+    s = re.sub(r"-\d{8}$", "", m)
+    s = s[len("claude-"):] if s.startswith("claude-") else s
+    out, digits = [], []
+    for part in s.split("-"):
+        if part.isdigit():
+            digits.append(part)
+            continue
+        if digits:
+            out.append(".".join(digits))
+            digits = []
+        out.append(part[:1].upper() + part[1:])
+    if digits:
+        out.append(".".join(digits))
+    return " ".join(x for x in out if x) or m
+
+
+def models_text(ms):
+    return ", ".join(model_name(m) for m in ms)
+
+
+def clock(dt):
+    """'12:05 am'."""
+    h = dt.hour % 12 or 12
+    return "{}:{:02d} {}".format(h, dt.minute, "am" if dt.hour < 12 else "pm")
+
+
 def hhmm(s):
-    return datetime.fromisoformat(s).strftime("%H:%M") if s else "--:--"
+    return clock(datetime.fromisoformat(s)) if s else "--"
+
+
+def time_range(a, b):
+    """'11:30-11:53 pm', or '11:50 am-12:10 pm' across noon."""
+    if not a or not b:
+        return hhmm(a or b)
+    x, y = hhmm(a), hhmm(b)
+    if x[-2:] == y[-2:]:
+        return x[:-3] + "-" + y
+    return x + "-" + y
 
 
 def when(s, target):
     if not s:
         return ""
     d = datetime.fromisoformat(s)
-    return d.strftime("%H:%M") if d.date().isoformat() == target else d.strftime("%b %d %H:%M")
+    if d.date().isoformat() == target:
+        return clock(d)
+    return "{} {}, {}".format(d.strftime("%b"), d.day, clock(d))
+
+
+def day_name(iso, today=None):
+    """'Today, Nov 16', 'Yesterday, Nov 15', 'Fri, Nov 14', with the year when it is not this year."""
+    d = datetime.strptime(iso, "%Y-%m-%d").date()
+    today = today or date.today()
+    md = "{} {}".format(d.strftime("%b"), d.day)
+    if d == today:
+        return "Today, " + md
+    if d == today - timedelta(days=1):
+        return "Yesterday, " + md
+    return "{}, {}{}".format(d.strftime("%a"), md, "" if d.year == today.year else ", {}".format(d.year))
+
+
+def plain_date(iso):
+    """'2026-11-15' -> 'Nov 15, 2026'; anything else as is."""
+    try:
+        d = datetime.strptime(str(iso), "%Y-%m-%d")
+    except ValueError:
+        return str(iso)
+    return "{} {}, {}".format(d.strftime("%b"), d.day, d.year)
+
+
+def ago(days):
+    if days is None:
+        return "date unknown"
+    return "today" if days == 0 else plural(days, "day") + " ago"
+
+
+def change_text(x, vs):
+    """'$137.63 less', '$12.00 more', 'same'."""
+    if abs(x) < 0.005:
+        return "Same as " + vs
+    return "{} {} than {}".format(money(abs(x)), "more" if x > 0 else "less", vs)
+
+
+def tok_short(x):
+    """Shortened token count for display; under 10,000 shown in full."""
+    return num(x) if abs(x) < 10000 else short_num(x)
+
+
+STATUS_WORDS = {"finished": "done", "running": "running", "stopped": "stopped"}
 
 
 def duration(sec):
@@ -946,8 +1046,8 @@ def cut(s, n):
 
 
 def why_text(why):
-    names = {"interrupted": "interrupted", "end of file": "cut off when the session closed or still in flight",
-             "no response written": "no response written"}
+    names = {"interrupted": "stopped by you", "end of file": "cut off at the end of a session, or still running",
+             "no response written": "no answer saved"}
     return ", ".join("{} {}".format(v, names.get(k, k)) for k, v in sorted(why.items()))
 
 
@@ -972,116 +1072,162 @@ def tldr_text(t):
         o.append("    " + t["meaning"])
         o.append("")
         return o
-    o.append("    Findings")
+    o.append("    What happened")
     o.extend("      - " + f for f in t["findings"])
-    o.append("    Meaning")
+    o.append("    What it means")
     o.append("      " + t["meaning"])
-    o.append("    Top ways to spend less")
+    o.append("    " + tips_heading(len(t["recommendations"])))
     if not t["recommendations"]:
-        o.append("      None found for today's data.")
+        o.append("      Nothing to suggest for this day.")
     for i, r in enumerate(t["recommendations"], 1):
-        tail = " (about {} for the day)".format(money(r["saving_usd"])) if r["saving_usd"] > 0 else ""
+        tail = " (could save about {})".format(money(r["saving_usd"])) if r["saving_usd"] > 0 else ""
         o.append("      {}. {}{}".format(i, r["action"], tail))
     o.append("")
     return o
 
 
+def tips_heading(n):
+    if n == 1:
+        return "Best way to spend less"
+    return "Top {} ways to spend less".format(n) if n else "Ways to spend less"
+
+
+def vs_word(s):
+    return "yesterday" if s["date"] == date.today().isoformat() else "the day before"
+
+
 def render_text(s, warning=None):
     o = []
     q = s["quality"]
-    o.append("Claude Code spend on {}: {}".format(s["date"], money(s["total"])))
-    o.append("  vs day before {}   {}-day average {}   updated {}".format(
-        signed_money(s["change"]), s["days_shown"], money(s["average"]), hhmm(s["generated"])))
+    o.append("Claude Code spend: {}: {}".format(day_name(s["date"]), money(s["total"])))
+    o.append("  {}   Daily average (last {} days) {}   Updated {}".format(
+        change_text(s["change"], vs_word(s)), s["days_shown"], money(s["average"]), hhmm(s["generated"])))
     o.extend(tldr_text(s["tldr"]))
     if q["not_logged"]:
-        o.append("  Not in transcripts (from Claude Code's own tally): about {} more".format(money(q["not_logged"])))
+        o.append("  Hidden background calls: about {} more, on top of the total".format(money(q["not_logged"])))
+    if q["not_logged"] or q["open_sessions"]:
+        o.append("  " + HIDDEN_LINE)
     if q["open_sessions"]:
-        o.append("  {} session(s) still open: their calls not written to transcripts are not known yet".format(q["open_sessions"]))
+        o.append("  {} still open, so {} hidden cost isn't known yet.".format(
+            plural(q["open_sessions"], "session") + (" is" if q["open_sessions"] == 1 else " are"),
+            "its" if q["open_sessions"] == 1 else "their"))
     o.append(ESTIMATE_LINE)
     if warning:
         o.append("Warning: " + warning)
 
     o.append("")
-    o.append("Where the money went")
+    o.append("Where the money went  (" + TOKEN_LINE + ")")
     o += _table(["", "Tokens", "Cost", "Share"],
-                [[t["label"], num(t["tokens"]), money(t["cost"]), "{:.1f}%".format(t["percent"])]
+                [[t["label"], plural(t["tokens"], "search", "searches") if t["key"] == "searches" else num(t["tokens"]),
+                  money(t["cost"]), "{:.1f}%".format(t["percent"])]
                  for t in s["token_types"]], {1, 2, 3})
 
     o.append("")
-    o.append("By model (window = last {} days)".format(s["days_shown"]))
+    o.append("By model  (token counts are for this day only)")
     rows = []
     for m in s["models"]:
         t = m["tokens"]
-        rows.append([m["model"], money(m["cost"]) if m["priced"] else "unpriced", num(m["responses"]),
+        rows.append([model_name(m["model"]), money(m["cost"]) if m["priced"] else "no price", num(m["responses"]),
                      short_num(t["output"]), short_num(t["cache_read"]), short_num(cache_writes(t)),
-                     short_num(t["input"]), money(m["window_cost"]) if m["priced"] else "unpriced",
+                     short_num(t["input"]), money(m["window_cost"]) if m["priced"] else "no price",
                      money(m["window_not_logged"]) if m["window_not_logged"] else ""])
-    o += _table(["Model", "Today", "Resp", "Output", "Cache read", "Cache write", "Input", "Window",
-                 "Not in transcripts"], rows, {1, 2, 3, 4, 5, 6, 7, 8})
+    o += _table(["Model", "Cost", "Answers", "Replies", "Re-read", "Memory", "New text",
+                 "{}-day cost".format(s["days_shown"]), "Hidden calls"], rows, {1, 2, 3, 4, 5, 6, 7, 8})
 
     o.append("")
-    o.append("Biggest sessions")
+    o.append("Biggest sessions  (costliest first, helper agents included)")
     rows = []
     for r in s["sessions"][:TOP_SESSIONS]:
         rows.append([money(r["total"]), money(r["main"]), money(r["sub"]), str(r["subagents"]),
-                     when(r["start"], s["date"]), cut(r["project"], 24),
-                     ", ".join(x.replace("claude-", "") for x in r["models"]),
+                     when(r["start"], s["date"]), cut(r["project"], 24), models_text(r["models"]),
                      cut(r["prompt"], 48) + ("  [running]" if r["running"] else "")])
-    o += _table(["Total", "Main", "Subagents", "#", "Started", "Project", "Models", "First prompt"], rows, {0, 1, 2, 3})
+    o += _table(["Total", "Main chat", "Helpers", "Agents", "Started", "Project", "Models", "First message"],
+                rows, {0, 1, 2, 3})
 
     o.append("")
-    o.append("Biggest subagents")
+    o.append("Biggest helper agents  (subagents: extra agents a session starts for a side job)")
     rows = []
     for r in s["subagents"][:TOP_SUBAGENTS]:
-        rows.append([money(r["cost"]), cut(r["name"], 34), ", ".join(x.replace("claude-", "") for x in r["models"]),
+        rows.append([money(r["cost"]), cut(r["name"], 34), models_text(r["models"]),
                      num(r["responses"]), short_num(sum(r["tokens"][k] for k in PRICE_KEYS)),
-                     "{}-{}".format(hhmm(r["start"]), hhmm(r["end"])), duration(r["duration_s"]), r["status"],
-                     r["session"][:8]])
-    o += _table(["Cost", "Name", "Model", "Resp", "Tokens", "Time", "Took", "Status", "Session"], rows, {0, 3, 4, 6})
+                     time_range(r["start"], r["end"]), duration(r["duration_s"]),
+                     STATUS_WORDS.get(r["status"], r["status"]), r["session"][:8]])
+    o += _table(["Cost", "Name", "Model", "Answers", "Tokens", "Time", "Took", "Status", "Session"], rows, {0, 3, 4, 6})
     if not s["subagents"]:
         o.append("  none on this day")
 
     o.append("")
     o.append("By project")
-    o += _table(["Cost", "Sessions", "Subagents", "Project"],
+    o += _table(["Cost", "Sessions", "Helpers", "Project folder"],
                 [[money(p["cost"]), str(p["sessions"]), str(p["subagents"]), p["project"]] for p in s["projects"]],
                 {0, 1, 2})
 
     o.append("")
-    o.append("By hour")
+    o.append("By hour  (your local time)")
     series = s["chart_series"]
-    short = [m.replace("claude-", "") for m in series]
+    short = [model_name(m) for m in series]
 
     def split(by_model):
         other = sum(v for m, v in by_model.items() if m not in series)
         return [money(by_model.get(m, 0.0)) for m in series] + [money(other)]
     hrs = [h for h in s["hours"] if h["total"] > 0]
     o += _table(["Hour", "Cost"] + short + ["Other"],
-                [["{:02d}:00".format(h["hour"]), money(h["total"])] + split(h["by_model"]) for h in hrs],
+                [[hour_name(h["hour"]), money(h["total"])] + split(h["by_model"]) for h in hrs],
                 set(range(1, len(series) + 3)))
 
     o.append("")
-    o.append("Last {} days".format(s["days_shown"]))
-    o += _table(["Day", "Logged"] + short + ["Other", "Not in transcripts", "Open sessions"],
-                [[datetime.strptime(d["date"], "%Y-%m-%d").strftime("%a %b %d"), money(d["total"])] + split(d["by_model"])
+    o.append("Last {}".format(plural(s["days_shown"], "day")))
+    o += _table(["Day", "Cost"] + short + ["Other", "Hidden calls", "Still open"],
+                [[datetime.strptime(d["date"], "%Y-%m-%d").strftime("%a %b %d").replace(" 0", " "), money(d["total"])] + split(d["by_model"])
                  + [money(d["not_logged"]) if d["not_logged"] else "", str(d["open_sessions"]) if d["open_sessions"] else ""]
                  for d in s["days"]], set(range(1, len(series) + 5)))
 
     o.append("")
-    o.append("Data quality")
-    o.append("  Files read {}; assistant lines that day {}; responses after dedupe {}; zero-usage lines skipped {}".format(
-        num(q["files_read"]), num(q["assistant_lines"]), num(q["responses"]), num(q["zero_usage_skipped"])))
-    o.append("  Requests logged that day {}; with no usage logged {}{}".format(
-        num(q["requests_logged"]), num(q["requests_no_usage"]),
-        " ({})".format(why_text(q["requests_no_usage_why"])) if q["requests_no_usage"] else ""))
-    o.append("  Compactions that day {} ({} tokens summarized); their usage is not written to transcripts".format(
-        num(q["compactions"]), num(q["compacted_tokens"])))
-    if q["unpriced_models"]:
-        o.append("  Unpriced models (not in the total): " + ", ".join(q["unpriced_models"]))
-    if q["dupe_conflicts"]:
-        o.append("  Responses written twice with different usage (last kept): {}".format(num(q["dupe_conflicts"])))
-    o.append("  Prices read {} ({} days ago)".format(q["prices_date"], q["prices_age_days"]))
+    o.append("How this was counted")
+    for k, v, _ in counted_rows(q):
+        o.append("  {}: {}".format(k, v))
     return "\n".join(o)
+
+
+def hour_name(h):
+    """0 -> '12 am', 13 -> '1 pm'."""
+    return "{} {}".format(h % 12 or 12, "am" if h < 12 else "pm")
+
+
+def counted_rows(q):
+    """(label, value, tooltip) rows for 'How this was counted', shared by the terminal and the page."""
+    rows = [
+        ("Log files read", num(q["files_read"]),
+         "Claude Code's saved session files that were read for this page."),
+        ("Claude reply lines read", num(q["assistant_lines"]),
+         "Lines in the logs where Claude answered, on this day."),
+        ("Answers counted", "{} (repeats removed)".format(num(q["responses"])),
+         "The same answer can be saved more than once; each is counted once."),
+        ("Empty lines skipped", num(q["zero_usage_skipped"]),
+         "Lines with no tokens, like error notes. They cost nothing."),
+        ("Calls with no cost saved", "{} of {}{}".format(
+            num(q["requests_no_usage"]), num(q["requests_logged"]),
+            " ({})".format(why_text(q["requests_no_usage_why"])) if q["requests_no_usage"] else ""),
+         "Calls to Claude that started but have no token count in the logs, so they aren't in the total."),
+        ("Chat shrinks (/compact)", "{}; {} tokens shrunk. Their cost isn't in the logs.".format(
+            plural(q["compactions"], "time"), tok_short(q["compacted_tokens"])),
+         "When a chat gets long, Claude Code sums it up to make room. That call is a hidden background call."),
+        ("Hidden background calls", "{} from Claude Code's own running total, for closed sessions{}".format(
+            money(q["not_logged"]),
+            "; {} still open, not known yet".format(plural(q["open_sessions"], "session")) if q["open_sessions"] else ""),
+         "Calls Claude Code makes behind the scenes and doesn't save in its logs."),
+        ("Models with no price", ", ".join(q["unpriced_models"]) or "none",
+         "Models missing from the price list (prices.json). Their cost is left out of every total."),
+        ("Prices", "checked {} ({}), from {}".format(plain_date(q["prices_date"]), ago(q["prices_age_days"]), q["prices_source"]),
+         "Anthropic's API price page, saved in prices.json."),
+    ]
+    if q["dupe_conflicts"]:
+        rows.insert(3, ("Saved twice, counts differed", "{} (kept the last)".format(num(q["dupe_conflicts"])),
+                        "The same answer was saved twice with different token counts; the last one is used."))
+    if q["unreadable_lines"]:
+        rows.insert(1, ("Broken lines skipped", num(q["unreadable_lines"]),
+                        "Lines that couldn't be read, usually half-written at the moment of reading."))
+    return rows
 
 
 # ---------------------------------------------------------------- html
@@ -1114,7 +1260,7 @@ tr:last-child td{border-bottom:0}
 th{font-weight:normal;color:var(--text2);font-size:11px;letter-spacing:.06em;text-transform:uppercase;line-height:14px;vertical-align:bottom;
 padding-top:8px;padding-bottom:8px;border-bottom:1px solid var(--line)}
 td.r{white-space:nowrap}td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
-td.nw{white-space:nowrap}
+td.nw,th{white-space:nowrap}
 td.tot{font-weight:bold}
 td.p{min-width:160px}
 .trunc{display:block;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1136,7 +1282,8 @@ tbody tr:hover td{background:var(--hl)}
 svg{width:100%;height:auto;display:block}
 .chart svg{min-width:760px}
 svg text{fill:var(--text2);font:13px Arial,sans-serif}
-svg .total{fill:var(--ink)}
+svg .total{fill:var(--ink)}svg .sm{font-size:11px}
+th[title],dt[title],.stat[title],.tile[title]{cursor:help}
 .s1{fill:var(--s1);background:var(--s1)}.s2{fill:var(--s2);background:var(--s2)}
 .s3{fill:var(--s3);background:var(--s3)}.s4{fill:var(--s4);background:var(--s4)}
 .s5{fill:var(--s5);background:var(--s5)}
@@ -1205,16 +1352,16 @@ def stacked_chart(labels, stacks, totals, extra=None, label_every=1, show_totals
                 continue
             y -= bh
             p.append('<rect class="{}" x="{:.1f}" y="{:.1f}" width="{:.1f}" height="{:.1f}" rx="2"><title>{}: {} {}</title></rect>'.format(
-                cls, x, y, bw, max(bh - 1, 0.5), html.escape(str(labels[i])), html.escape(name), money(v)))
+                cls, x, y, bw, max(bh - 1, 0.5), html.escape(str(labels[i])),
+                html.escape(name if name == "Other" else model_name(name)), money(v)))
         if extra and extra[i] > 0:
             bh = ph * extra[i] / mx
             y -= bh
-            p.append('<rect class="gapfill" x="{:.1f}" y="{:.1f}" width="{:.1f}" height="{:.1f}" rx="2"><title>{}: not in transcripts {}</title></rect>'.format(
+            p.append('<rect class="gapfill" x="{:.1f}" y="{:.1f}" width="{:.1f}" height="{:.1f}" rx="2"><title>{}: hidden background calls {}</title></rect>'.format(
                 x, y, bw, max(bh - 1, 0.5), html.escape(str(labels[i])), money(extra[i])))
         if totals[i] > 0 and (show_totals or totals[i] >= 0.25 * max(totals)):
-            lab = money(totals[i]) if show_totals else "${:,.0f}".format(totals[i])
-            p.append('<text class="total" x="{:.1f}" y="{:.1f}" text-anchor="middle">{}</text>'.format(
-                x + bw / 2, y - 8, lab))
+            p.append('<text class="total{}" x="{:.1f}" y="{:.1f}" text-anchor="middle">{}</text>'.format(
+                "" if show_totals else " sm", x + bw / 2, y - 8, money(totals[i])))
         if i % label_every == 0:
             p.append('<text x="{:.1f}" y="{}" text-anchor="middle">{}</text>'.format(
                 x + bw / 2, h - 8, html.escape(str(labels[i]))))
@@ -1223,11 +1370,12 @@ def stacked_chart(labels, stacks, totals, extra=None, label_every=1, show_totals
 
 
 def legend(series, has_other, has_gap=False):
-    items = ['<span><i class="sw {}"></i>{}</span>'.format(_series_class(m, series), html.escape(m)) for m in series]
+    items = ['<span title="{}"><i class="sw {}"></i>{}</span>'.format(html.escape(m), _series_class(m, series), html.escape(model_name(m)))
+             for m in series]
     if has_other:
         items.append('<span><i class="sw s4"></i>Other models</span>')
     if has_gap:
-        items.append('<span><i class="sw gapsw"></i>Not in transcripts (Claude Code tally)</span>')
+        items.append('<span title="{}"><i class="sw gapsw"></i>Hidden background calls</span>'.format(html.escape(HIDDEN_LINE)))
     return '<div class="legend">{}</div>'.format("".join(items))
 
 
@@ -1240,11 +1388,35 @@ def _trunc(text):
     return '<span class="trunc" title="{0}">{0}</span>'.format(html.escape(text or ""))
 
 
+def _th(label, tip, right=False):
+    """Table header with its one-line plain explanation as a tooltip."""
+    return '<th{} title="{}">{}</th>'.format(' class="r"' if right else "", html.escape(tip), html.escape(label))
+
+
+def _tok_td(n, cls="r"):
+    """Token count, shortened, with the exact number as a tooltip."""
+    return '<td class="{}" title="{} tokens">{}</td>'.format(cls, num(n), tok_short(n))
+
+
+def _nb(text):
+    """Escaped text with '(5 min)' and '(1 hour)' kept on one line."""
+    return html.escape(text).replace(" min)", "&nbsp;min)").replace(" hour)", "&nbsp;hour)")
+
+
+def _model_html(m):
+    return '<span title="{}">{}</span>'.format(html.escape(m), html.escape(model_name(m)))
+
+
+def _models_html(ms):
+    return ", ".join(_model_html(m) for m in ms)
+
+
 def render_html(s, refresh=False, warning=None):
     esc = html.escape
     q = s["quality"]
     series = s["chart_series"]
     target = s["date"]
+    vs = vs_word(s)
     p = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
          '<meta name="viewport" content="width=device-width,initial-scale=1">',
          '<meta name="color-scheme" content="light">']
@@ -1253,49 +1425,56 @@ def render_html(s, refresh=False, warning=None):
     p.append("<title>{}</title><style>{}</style></head><body><main>".format(PAGE_TITLE, CSS))
 
     # header
-    d = datetime.strptime(target, "%Y-%m-%d")
-    p.append('<div class="card"><h1>Claude Code spend, {}</h1>'.format(esc(d.strftime("%A %B %d, %Y").replace(" 0", " "))))
-    p.append('<div class="big">{}</div>'.format(money(s["total"])))
+    p.append('<div class="card"><h1>Claude Code spend: {}</h1>'.format(esc(day_name(target))))
+    p.append('<div class="big" title="Estimated cost at API prices">{}</div>'.format(money(s["total"])))
     p.append('<div class="stats">')
-    p.append('<div class="stat"><span>vs day before</span><b>{}</b></div>'.format(signed_money(s["change"])))
-    p.append('<div class="stat"><span>{}-day average</span><b>{}</b></div>'.format(s["days_shown"], money(s["average"])))
+
+    def stat(label, value, tip):
+        p.append('<div class="stat" title="{}"><span>{}</span><b>{}</b></div>'.format(esc(tip), esc(label), esc(value)))
+    stat("vs " + vs, change_text(s["change"], vs).replace(" than " + vs, "").replace("Same as " + vs, "Same"),
+         "{}: {}.".format(vs[:1].upper() + vs[1:], money(s["yesterday"])))
+    stat("Daily average", money(s["average"]), "Average cost per day over the last {}.".format(plural(s["days_shown"], "day")))
     if q["not_logged"]:
-        p.append('<div class="stat"><span>not in transcripts</span><b>+{}</b></div>'.format(money(q["not_logged"])))
-    p.append('<div class="stat"><span>updated</span><b>{}</b></div>'.format(hhmm(s["generated"])))
+        stat("Hidden calls", "+" + money(q["not_logged"]), HIDDEN_LINE + " Not in the big number above.")
+    stat("Updated", hhmm(s["generated"]), "When this page was made.")
     p.append('</div>')
     p.append('<p class="note">{}</p>'.format(esc(ESTIMATE_LINE)))
+    if q["not_logged"] or q["open_sessions"]:
+        p.append('<p class="note">{}</p>'.format(esc(HIDDEN_LINE)))
     if q["open_sessions"]:
-        p.append('<p class="note">{} session{} still open. Claude Code also makes calls it does not write to the transcripts '
-                 '(compaction, titles, summaries, safety checks); their cost shows here once a session closes.</p>'.format(
-                     q["open_sessions"], "" if q["open_sessions"] == 1 else "s"))
+        n = q["open_sessions"]
+        p.append('<p class="note">{} still open, so {} hidden cost isn\'t known yet.</p>'.format(
+            plural(n, "session") + (" is" if n == 1 else " are"), "its" if n == 1 else "their"))
     if warning:
         p.append('<p class="note warn">Warning: {}</p>'.format(esc(warning)))
     p.append('</div>')
 
     # tldr
     t = s["tldr"]
-    p.append('<div class="card tldr"><h2>TLDR</h2>')
+    p.append('<div class="card tldr"><h2 title="Too long, didn\'t read: the short version.">TLDR</h2>')
     if t["empty"]:
         p.append('<p class="lead" style="margin:8px 0 0">{}</p>'.format(esc(t["meaning"])))
     else:
-        p.append('<div class="tl"><h3>Findings</h3><ul>{}</ul></div>'.format(
+        p.append('<div class="tl"><h3>What happened</h3><ul>{}</ul></div>'.format(
             "".join("<li>{}</li>".format(esc(f)) for f in t["findings"])))
-        p.append('<div class="tl"><h3>Meaning</h3><p>{}</p></div>'.format(esc(t["meaning"])))
-        p.append('<div class="tl"><h3>Top 3 ways to spend less</h3>')
+        p.append('<div class="tl"><h3>What it means</h3><p>{}</p></div>'.format(esc(t["meaning"])))
+        p.append('<div class="tl"><h3 title="Hover a figure to see how it was worked out.">{}</h3>'.format(
+            tips_heading(len(t["recommendations"]))))
         if t["recommendations"]:
             p.append("<ol>")
             for r in t["recommendations"]:
-                pill = ('<span class="tag run" title="{}">about {}</span>'.format(esc(r["basis"]), money(r["saving_usd"]))
+                pill = ('<span class="tag run" title="{}">could save {}</span>'.format(esc(r["basis"]), money(r["saving_usd"]))
                         if r["saving_usd"] > 0 else '<span class="tag" title="{}">no estimate</span>'.format(esc(r["basis"])))
                 p.append('<li><span>{}</span>{}</li>'.format(esc(r["action"]), pill))
             p.append("</ol>")
         else:
-            p.append("<p>None found for today's data.</p>")
+            p.append("<p>Nothing to suggest for this day.</p>")
         p.append("</div>")
     p.append('</div>')
 
     # where the money went
-    p.append('<div class="card"><h2>Where the money went</h2><p class="lead">What the day\'s cost paid for.</p>')
+    p.append('<div class="card"><h2>Where the money went</h2><p class="lead">What the money paid for. '
+             'Counted in tokens (word pieces). One token is about 3/4 of a word.</p>')
     ranked = sorted(s["token_types"], key=lambda t: -t["cost"])
     rank = {t["key"]: min(i + 1, 5) for i, t in enumerate(ranked)}
     if s["total"] > 0:
@@ -1305,54 +1484,81 @@ def render_html(s, refresh=False, warning=None):
                 p.append('<i class="s{}" style="width:{:.3f}%" title="{}: {} ({:.1f}%)"></i>'.format(
                     rank[t["key"]], t["percent"], esc(t["label"]), money(t["cost"]), t["percent"]))
         p.append('</div>')
-    p.append('<div class="scroll"><table><thead><tr><th>Paid for</th><th class="r">Tokens</th>'
-             '<th class="r">Cost</th><th class="r">Share</th></tr></thead><tbody>')
+    p.append('<div class="scroll"><table><thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
+        _th("What", "What the money paid for."),
+        _th("Tokens", TOKEN_LINE, True),
+        _th("Cost", "Estimated cost at API prices.", True),
+        _th("Share", "Share of the day's cost.", True)))
     for t in s["token_types"]:
         sw = '<i class="sw s{}"></i>'.format(rank[t["key"]]) if t["cost"] > 0 else '<i class="sw"></i>'
+        cell = (_td(plural(t["tokens"], "search", "searches")) if t["key"] == "searches" else _tok_td(t["tokens"]))
         p.append('<tr><td class="p">{}{}<div class="dim small">{}</div></td>{}{}{}</tr>'.format(
-            sw, esc(t["label"]), esc(t["explain"]), _td(num(t["tokens"]) if t["key"] != "searches" else num(t["tokens"]) + " searches"),
+            sw, _nb(t["label"]), esc(t["explain"]), cell,
             _td(money(t["cost"])), _td("{:.1f}%".format(t["percent"]))))
     p.append('</tbody></table></div></div>')
 
     # token tiles
     tk = {t["key"]: t["tokens"] for t in s["token_types"]}
-    p.append('<div class="card"><h2>Tokens</h2><div class="tiles">')
-    for lab, val in (("Input", tk["input"]), ("Output", tk["output"]),
-                     ("Cache writes", tk["cache_write_5m"] + tk["cache_write_1h"]), ("Cache reads", tk["cache_read"])):
-        p.append('<div class="tile"><span>{}</span><b>{}</b></div>'.format(lab, num(val)))
+    p.append('<div class="card"><h2 title="{}">Tokens used</h2><div class="tiles">'.format(esc(TOKEN_LINE)))
+    for lab, val, tip in (("New text sent", tk["input"], "Text sent to Claude that wasn't saved to memory."),
+                          ("Claude's replies", tk["output"], "Everything Claude wrote."),
+                          ("Saved to memory", tk["cache_write_5m"] + tk["cache_write_1h"], "Chat saved so Claude can re-read it cheaply (5 min and 1 hour)."),
+                          ("Re-read", tk["cache_read"], "Chat Claude read again from memory on each turn.")):
+        p.append('<div class="tile" title="{}"><span>{}</span><b title="{} tokens">{}</b></div>'.format(
+            esc(tip), esc(lab), num(val), tok_short(val)))
     p.append('</div></div>')
 
     # by model
-    p.append('<div class="card"><h2>By model</h2><p class="lead">Every model used in the last {} days, today first. '
-             'Tokens are for this day.</p>'.format(s["days_shown"]))
-    p.append('<div class="scroll"><table><thead><tr><th>Model</th><th class="r">This day</th><th class="r">Responses</th>'
-             '<th class="r">Writing</th><th class="r">Re-reading</th><th class="r">Saving 5m</th><th class="r">Saving 1h</th>'
-             '<th class="r">New input</th><th class="r">{}-day total</th><th class="r">Not in transcripts*</th></tr></thead><tbody>'.format(s["days_shown"]))
+    p.append('<div class="card"><h2>By model</h2><p class="lead">Each Claude model used in the last {}. '
+             'Token counts are for this day only.</p>'.format(plural(s["days_shown"], "day")))
+    p.append('<div class="scroll"><table><thead><tr>{}</tr></thead><tbody>'.format("".join([
+        _th("Model", "The Claude model. Hover a name for its full id."),
+        _th("Cost", "Cost on this day.", True),
+        _th("Answers", "How many times this model answered.", True),
+        _th("Replies", "Tokens Claude wrote.", True),
+        _th("Re-read", "Tokens of chat Claude read again from memory.", True),
+        _th("Memory 5m", "Tokens saved to short-term memory (5 min).", True),
+        _th("Memory 1h", "Tokens saved to longer memory (1 hour).", True),
+        _th("New text", "Tokens of new text sent, not saved to memory.", True),
+        _th("{}-day cost".format(s["days_shown"]), "Cost over the last {}.".format(plural(s["days_shown"], "day")), True),
+        _th("Hidden calls*", "Hidden background calls over the last {}. See the note below.".format(plural(s["days_shown"], "day")), True)])))
     for m in s["models"]:
         t = m["tokens"]
         p.append('<tr><td class="nw">{}{}</td>{}{}{}{}{}{}{}{}{}</tr>'.format(
-            esc(m["model"]), "" if m["priced"] else '<span class="tag unp">unpriced</span>',
-            _td(money(m["cost"]) if m["priced"] else "unpriced"), _td(num(m["responses"])),
-            _td(num(t["output"])), _td(num(t["cache_read"])), _td(num(t["cache_write_5m"])),
-            _td(num(t["cache_write_1h"])), _td(num(t["input"])),
-            _td(money(m["window_cost"]) if m["priced"] else "unpriced"),
+            _model_html(m["model"]), "" if m["priced"] else '<span class="tag unp">no price</span>',
+            _td(money(m["cost"]) if m["priced"] else "no price"), _td(num(m["responses"])),
+            _tok_td(t["output"]), _tok_td(t["cache_read"]), _tok_td(t["cache_write_5m"]),
+            _tok_td(t["cache_write_1h"]), _tok_td(t["input"]),
+            _td(money(m["window_cost"]) if m["priced"] else "no price"),
             _td(money(m["window_not_logged"]) if m["window_not_logged"] else "")))
     if not s["models"]:
-        p.append('<tr><td colspan="10" class="dim">No usage in this window.</td></tr>')
-    p.append('</tbody></table></div><p class="note">* From Claude Code\'s own tally, over the {} days, for sessions that have closed. '
-             'Unpriced models have no entry in prices.json and are not in any total.</p></div>'.format(s["days_shown"]))
+        p.append('<tr><td colspan="10" class="dim">Nothing used in these days.</td></tr>')
+    p.append('</tbody></table></div><p class="note">* Calls Claude Code makes behind the scenes and doesn\'t save in its logs, '
+             'from its own running total, for closed sessions. A model marked "no price" is missing from the price list '
+             '(prices.json) and is left out of every total.</p></div>')
 
     # sessions
-    p.append('<div class="card"><h2>Biggest sessions</h2><p class="lead">The {} costliest sessions this day, subagents included.</p>'.format(TOP_SESSIONS))
-    p.append('<div class="scroll"><table><thead><tr><th>Started</th><th>Project</th><th>First prompt</th><th>Models</th>'
-             '<th class="r">Main</th><th class="r">Subagents</th><th class="r">Agents</th><th class="r">Total</th>'
-             '<th class="r">Not in transcripts</th></tr></thead><tbody>')
+    shown = min(len(s["sessions"]), TOP_SESSIONS)
+    p.append('<div class="card"><h2 title="A session is one Claude Code chat.">Biggest sessions</h2>'
+             '<p class="lead">Costliest first, helper agents included. Showing {}.</p>'.format(
+                 plural(shown, "session") if shown == len(s["sessions"]) else "{} of {}".format(shown, plural(len(s["sessions"]), "session"))))
+    p.append('<div class="scroll"><table><thead><tr>{}</tr></thead><tbody>'.format("".join([
+        _th("Started", "When the session began, your local time."),
+        _th("Project", "The folder Claude Code was working in."),
+        _th("First message", "The first thing you typed in the session. Hover to see it all."),
+        _th("Models", "Models used, biggest cost first."),
+        _th("Main chat", "Cost of the chat itself, without helper agents.", True),
+        _th("Helpers", "Cost of the helper agents this session started.", True),
+        _th("Agents", "How many helper agents it started.", True),
+        _th("Total", "Main chat plus helpers.", True),
+        _th("Hidden", "Hidden background calls for this session. \"Not yet\" means it's still open.", True)])))
     for r in s["sessions"][:TOP_SESSIONS]:
-        badge = '<span class="tag run">running</span>' if r["running"] else ""
-        nl = "open" if r["not_logged"] is None else (money(r["not_logged"]) if r["not_logged"] else "")
+        badge = '<span class="tag run" title="Active in the last 5 minutes">running</span>' if r["running"] else ""
+        nl = ('<span title="Still open; known once it closes">not yet</span>' if r["not_logged"] is None
+              else (money(r["not_logged"]) if r["not_logged"] else ""))
         p.append('<tr><td class="nw">{}</td><td class="nw">{}</td><td class="p"><div style="display:flex;align-items:center">{}{}</div></td><td class="nw">{}</td>{}{}{}{}{}</tr>'.format(
             esc(when(r["start"], target)), esc(r["project"]), _trunc(r["prompt"]), badge,
-            esc(", ".join(m.replace("claude-", "") for m in r["models"])),
+            _models_html(r["models"]),
             _td(money(r["main"])), _td(money(r["sub"])), _td(num(r["subagents"])),
             _td(money(r["total"]), "r tot"), _td(nl)))
     if not s["sessions"]:
@@ -1360,32 +1566,48 @@ def render_html(s, refresh=False, warning=None):
     p.append('</tbody></table></div></div>')
 
     # subagents
-    p.append('<div class="card"><h2>Biggest subagents</h2><p class="lead">The {} costliest subagents this day, across all sessions, '
-             'priced by the model that actually answered.</p>'.format(TOP_SUBAGENTS))
-    p.append('<div class="scroll"><table><thead><tr><th>Name</th><th>Model used</th><th>Session</th><th class="r">Cost</th>'
-             '<th class="r">Tokens</th><th class="r">Responses</th><th>Time</th><th class="r">Took</th><th>Status</th></tr></thead><tbody>')
+    shown = min(len(s["subagents"]), TOP_SUBAGENTS)
+    p.append('<div class="card"><h2 title="Helper agents (subagents) are extra Claude agents a session starts to do a side job.">'
+             'Biggest helper agents</h2><p class="lead">Extra agents a session starts for a side job. Costliest first, '
+             'from all sessions, priced by the model that did the work. Showing {}.</p>'.format(
+                 plural(shown, "agent") if shown == len(s["subagents"]) else "{} of {}".format(shown, plural(len(s["subagents"]), "agent"))))
+    p.append('<div class="scroll"><table><thead><tr>{}</tr></thead><tbody>'.format("".join([
+        _th("Name", "The agent's name, or its first instruction when it has none."),
+        _th("Model", "The model that actually did the work."),
+        _th("Started from", "The first message of the session that started it."),
+        _th("Cost", "Estimated cost at API prices.", True),
+        _th("Tokens", "All tokens. Hover a number for the breakdown.", True),
+        _th("Answers", "How many times it answered.", True),
+        _th("Time", "When it ran, your local time."),
+        _th("Took", "How long it ran.", True),
+        _th("Status", "Done, running (active in the last 5 minutes) or stopped.")])))
     for r in s["subagents"][:TOP_SUBAGENTS]:
         tk = r["tokens"]
-        tip = "output {}, cache reads {}, cache writes {}, input {}".format(
+        tip = "replies {}, re-read {}, saved to memory {}, new text {}".format(
             num(tk["output"]), num(tk["cache_read"]), num(cache_writes(tk)), num(tk["input"]))
         req = r["requested_model"]
-        asked = (' <span class="dim">(asked for {})</span>'.format(esc(req))
+        asked = (' <span class="dim">(asked for {})</span>'.format(esc(req[:1].upper() + req[1:]))
                  if isinstance(req, str) and req not in ("inherit", "") and not any(req in m for m in r["models"]) else "")
         name = esc(r["name"]) if r["named"] else '<span class="dim">{}</span>'.format(esc(r["name"]))
+        status = STATUS_WORDS.get(r["status"], r["status"])
         p.append('<tr><td class="p">{}</td><td class="nw">{}{}</td><td class="p dim">{}</td>{}<td class="r" title="{}">{}</td>{}'
-                 '<td class="nw">{}-{}</td>{}<td>{}</td></tr>'.format(
-                     name, esc(", ".join(m.replace("claude-", "") for m in r["models"])), asked,
+                 '<td class="nw">{}</td>{}<td>{}</td></tr>'.format(
+                     name, _models_html(r["models"]), asked,
                      _trunc(r["session_prompt"] or r["session"]), _td(money(r["cost"]), "r tot"),
-                     esc(tip), num(sum(tk[k] for k in PRICE_KEYS)), _td(num(r["responses"])),
-                     hhmm(r["start"]), hhmm(r["end"]), _td(duration(r["duration_s"])),
-                     '<span class="tag run" style="margin-left:0">running</span>' if r["status"] == "running" else esc(r["status"])))
+                     esc(tip), tok_short(sum(tk[k] for k in PRICE_KEYS)), _td(num(r["responses"])),
+                     esc(time_range(r["start"], r["end"])), _td(duration(r["duration_s"])),
+                     '<span class="tag run" style="margin-left:0">running</span>' if r["status"] == "running" else esc(status)))
     if not s["subagents"]:
-        p.append('<tr><td colspan="9" class="dim">No subagents on this day.</td></tr>')
+        p.append('<tr><td colspan="9" class="dim">No helper agents on this day.</td></tr>')
     p.append('</tbody></table></div></div>')
 
     # projects
-    p.append('<div class="card"><h2>By project</h2><p class="lead">Spend by project folder this day.</p>')
-    p.append('<div class="scroll"><table><thead><tr><th>Project folder</th><th class="r">Sessions</th><th class="r">Subagents</th><th class="r">Cost</th></tr></thead><tbody>')
+    p.append('<div class="card"><h2>By project</h2><p class="lead">Cost by the folder Claude Code worked in.</p>')
+    p.append('<div class="scroll"><table><thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
+        _th("Folder", "The project folder Claude Code was working in."),
+        _th("Sessions", "Chats in this folder on this day.", True),
+        _th("Helpers", "Helper agents started from those chats.", True),
+        _th("Cost", "Estimated cost at API prices.", True)))
     for r in s["projects"]:
         p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(r["project"]), _td(num(r["sessions"])), _td(num(r["subagents"])), _td(money(r["cost"]), "r tot")))
     if not s["projects"]:
@@ -1395,55 +1617,41 @@ def render_html(s, refresh=False, warning=None):
     # hours
     hstacks = [_stack(h["by_model"], series) for h in s["hours"]]
     has_other = any(c == "s4" for st in hstacks for c, _, _ in st)
-    p.append('<div class="card"><h2>By hour</h2><p class="lead">Local time. The busiest hours are labelled; hover a bar for its models.</p>{}<div class="scroll chart">{}</div></div>'.format(
+    p.append('<div class="card"><h2>By hour</h2><p class="lead">Your local time. Hover a bar to see each model\'s cost.</p>{}<div class="scroll chart">{}</div></div>'.format(
         legend(series, has_other),
-        stacked_chart(["{:02d}".format(h["hour"]) for h in s["hours"]], hstacks, [h["total"] for h in s["hours"]],
-                      label_every=1, show_totals=False)))
+        stacked_chart([hour_name(h["hour"]).replace(" am", "a").replace(" pm", "p") for h in s["hours"]], hstacks,
+                      [h["total"] for h in s["hours"]], label_every=1, show_totals=False)))
 
     # days
     dstacks = [_stack(dd["by_model"], series) for dd in s["days"]]
     has_other = any(c == "s4" for st in dstacks for c, _, _ in st)
     gaps = [dd["not_logged"] for dd in s["days"]]
     n = len(s["days"])
-    labels = [datetime.strptime(dd["date"], "%Y-%m-%d").strftime("%a %d" if n <= 14 else "%m-%d") for dd in s["days"]]
-    p.append('<div class="card"><h2>Last {} days</h2><p class="lead">Each bar is labelled with its logged total.</p>{}<div class="scroll chart">{}</div>'.format(
-        n, legend(series, has_other, any(g > 0 for g in gaps)),
+    labels = [datetime.strptime(dd["date"], "%Y-%m-%d").strftime("%a %d" if n <= 14 else "%b %d").replace(" 0", " ") for dd in s["days"]]
+    p.append('<div class="card"><h2>Last {} days</h2><p class="lead">Each bar shows the day\'s cost.{}</p>{}<div class="scroll chart">{}</div>'.format(
+        n, " Striped tops are hidden background calls." if any(g > 0 for g in gaps) else "",
+        legend(series, has_other, any(g > 0 for g in gaps)),
         stacked_chart(labels, dstacks, [dd["total"] for dd in s["days"]], extra=gaps,
                       label_every=1 if n <= 14 else max(1, n // 10), show_totals=n <= 14)))
-    p.append('<div class="scroll" style="margin-top:16px"><table class="narrow"><thead><tr><th>Day</th><th class="r">Logged</th><th class="r">Not in transcripts</th>'
-             '<th class="r">Open sessions</th></tr></thead><tbody>')
+    p.append('<div class="scroll" style="margin-top:16px"><table class="narrow"><thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
+        _th("Day", "Newest first."),
+        _th("Cost", "Estimated cost at API prices, from the logs.", True),
+        _th("Hidden calls", "Hidden background calls, on top of the cost.", True),
+        _th("Still open", "Sessions not closed yet, so their hidden calls aren't known.", True)))
     for dd, lab in zip(reversed(s["days"]), reversed(labels)):
         p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(lab), _td(money(dd["total"])),
                                                     _td(money(dd["not_logged"]) if dd["not_logged"] else ""),
                                                     _td(num(dd["open_sessions"]) if dd["open_sessions"] else "")))
     p.append('</tbody></table></div></div>')
 
-    # data quality
-    p.append('<div class="card"><h2>Data quality</h2><p class="lead">What was read and what could not be counted, for this day.</p><dl>')
-    rows = [
-        ("Files read", num(q["files_read"])),
-        ("Assistant lines read", num(q["assistant_lines"])),
-        ("Responses after dedupe", num(q["responses"])),
-        ("Zero-usage lines skipped", num(q["zero_usage_skipped"])),
-        ("Requests with no usage logged", "{}{}".format(num(q["requests_no_usage"]),
-                                                       " of {} ({})".format(num(q["requests_logged"]), why_text(q["requests_no_usage_why"]))
-                                                       if q["requests_no_usage"] else " of {}".format(num(q["requests_logged"])))),
-        ("Compactions", "{} ({} tokens summarized; usage not written to transcripts)".format(num(q["compactions"]), num(q["compacted_tokens"]))),
-        ("Not in transcripts", "{} from Claude Code's own tally for closed sessions{}".format(
-            money(q["not_logged"]), "; {} session(s) still open, not known yet".format(q["open_sessions"]) if q["open_sessions"] else "")),
-        ("Unpriced models", ", ".join(q["unpriced_models"]) or "none"),
-        ("Prices", "read {} ({} days ago) from {}".format(q["prices_date"], q["prices_age_days"], q["prices_source"])),
-    ]
-    if q["dupe_conflicts"]:
-        rows.insert(3, ("Written twice, usage differed", "{} (last kept)".format(num(q["dupe_conflicts"]))))
-    if q["unreadable_lines"]:
-        rows.insert(1, ("Unreadable lines skipped", num(q["unreadable_lines"])))
-    for k, v in rows:
-        p.append('<div class="kv"><dt>{}</dt><dd>{}</dd></div>'.format(esc(k), esc(v)))
+    # how this was counted
+    p.append('<div class="card"><h2>How this was counted</h2><p class="lead">What was read, and what couldn\'t be counted, on this day.</p><dl>')
+    for k, v, tip in counted_rows(q):
+        p.append('<div class="kv"><dt title="{}">{}</dt><dd>{}</dd></div>'.format(esc(tip), esc(k), esc(v)))
     p.append('</dl></div>')
 
     # privacy
-    p.append('<div class="card privacy"><p>Nothing on this page leaves this computer unless you publish it. {}</p></div>'.format(esc(PRIVACY_LINE)))
+    p.append('<div class="card privacy"><p>Nothing here leaves this computer unless you publish it. {}</p></div>'.format(esc(PRIVACY_LINE)))
     p.append("</main></body></html>")
     return "".join(p)
 
