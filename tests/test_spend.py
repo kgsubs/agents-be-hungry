@@ -1,5 +1,6 @@
 """Tests for spend.py. Fixtures are small made-up transcripts, no real data."""
 import contextlib
+import html
 import io
 import json
 import os
@@ -314,7 +315,8 @@ class SpendTests(unittest.TestCase):
         self.assertEqual(q["requests_no_usage"], 2)
         self.assertEqual(q["requests_no_usage_why"], {"interrupted": 1, "end of file": 1})
         self.assertEqual(q["requests_no_usage_by_day"][date.today().isoformat()], 2)
-        self.assertIn("Calls with no cost saved", spend.render_html(s))
+        self.assertIn("Calls with no cost saved", spend.render_text(s))
+        self.assertIn("Calls with no token count", spend.render_html(s))
 
     def test_compactions_counted(self):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1000),
@@ -360,11 +362,11 @@ class SpendTests(unittest.TestCase):
         hidden = next(t for t in s["token_types"] if t["key"] == "hidden")
         self.assertEqual(hidden["label"], "Hidden background calls")
         self.assertAlmostEqual(hidden["cost"], 1.50, places=6)
-        self.assertIn("Hidden background calls", spend.render_html(s))
+        self.assertIn("Background calls", spend.render_html(s))
         text = spend.render_text(s)
         self.assertTrue(text.splitlines()[0].endswith("$3.50"))
         self.assertIn("Includes $1.50 of hidden background calls (logged $2.00)", text)
-        self.assertIn("Includes $1.50 of hidden background calls (logged $2.00)", spend.render_html(s))
+        self.assertIn("Includes $1.50 in background calls. The logs show $2.00.", spend.render_html(s))
         self.assertNotIn("still open", text)
 
     def test_yesterday_and_change_include_hidden(self):
@@ -384,9 +386,8 @@ class SpendTests(unittest.TestCase):
         self.assertEqual(s["open_sessions"], 1)
         self.assertIsNone(s["sessions"][0]["not_logged"])
         self.assertAlmostEqual(s["sessions"][0]["total"], 2.00, places=6)
-        line1 = "1 session is still open; its background calls get added when it closes."
-        self.assertIn(line1, spend.render_text(s))
-        self.assertIn(line1, spend.render_html(s))
+        self.assertIn("1 session is still open; its background calls get added when it closes.", spend.render_text(s))
+        self.assertIn("1 session is still open. Its background calls get added when it closes.", spend.render_html(s))
         self.assertNotIn("Includes", spend.render_text(s))
 
     def test_chart_bar_label_is_full_total(self):
@@ -411,6 +412,7 @@ class SpendTests(unittest.TestCase):
                   "models", "sessions", "subagents", "projects", "hours", "days", "quality", "prices_warning", "tldr",
                   "logged_total", "not_logged", "open_sessions"):
             self.assertIn(k, j)
+        self.assertNotIn(spend.PAGE_TLDR_KEY, j)                    # the page's wording stays off --json
         self.assertEqual(len(j["hours"]), 24)
         self.assertEqual(len(j["days"]), 7)
         self.assertEqual(j["subagents"][0]["id"], "a1")
@@ -446,9 +448,9 @@ class SpendTests(unittest.TestCase):
         self.fx.write("proj/s.jsonl", [user("secret prompt"), line("m1", "r1", inp=1000)])
         _, s = run_summary(self.fx.root)
         page = spend.render_html(s)
-        for needle in ("Don&#x27;t share it as is", "Where the money went", "By model", "Biggest sessions",
-                       "Biggest helper agents", "By project", "By hour", "Last 7 days", "How this was counted",
-                       "This is an estimate at API prices", "secret prompt"):
+        for needle in ("Don&#x27;t share it as is", "Cost by type", "Tokens by type", "Cost by model", "Cost by project",
+                       "Biggest sessions", "Biggest subagents", "Cost by day", "The last 7 days", "Cost by hour",
+                       "How it&#x27;s counted", "This is an estimate at API prices", "secret prompt"):
             self.assertIn(needle, page)
         self.assertEqual(page.count("serif"), page.count("sans-serif"))   # no serif font anywhere
 
@@ -486,7 +488,7 @@ class SpendTests(unittest.TestCase):
         s, t = self.tl()
         self.assertTrue(t["empty"])
         self.assertEqual(t["recommendations"], [])
-        self.assertIn("Too little spend", spend.render_html(s))
+        self.assertIn("Not enough spend for a TLDR", spend.render_html(s))
         self.assertIn("Too little spend", spend.render_text(s))
 
     def test_tldr_findings_and_meaning(self):
@@ -569,10 +571,29 @@ class SpendTests(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(s))["tldr"], t)
         text = spend.render_text(s)
         self.assertLess(text.index("TLDR"), text.index("This is an estimate at API prices"))
+        self.assertIn("Best way to spend less", text)                 # one tip: singular heading
         page = spend.render_html(s)
-        self.assertIn("Best way to spend less", page)                 # one tip: singular heading
+        self.assertIn("Best tip to reduce spend", page)
         self.assertIn('title="Re-reading in your longest session cost $10.00', page)
-        self.assertLess(page.index("TLDR"), page.index("Where the money went"))
+        self.assertLess(page.index("TLDR"), page.index("Cost by type"))
+
+    def test_tldr_page_words_same_numbers(self):
+        self.fx.write("proj/s.jsonl", [user("p"), line("m1", "r1", cr=200_000_000, inp=1_000_000, w1=1_000_000)])
+        self.fx.write("proj/s/subagents/agent-1.jsonl", [line("m2", "r2", model="claude-opus-5-5", inp=1_000_000)])
+        s, t = self.tl()
+        pt = s[spend.PAGE_TLDR_KEY]
+        self.assertEqual(t["findings"][0], "{:.0f}% of today's cost was Claude re-reading the chat.".format(
+            s["token_types"][1]["percent"]))                          # the terminal keeps its words
+        self.assertEqual([r["saving_usd"] for r in pt["recommendations"]], [r["saving_usd"] for r in t["recommendations"]])
+        self.assertEqual(len(pt["findings"]), len(t["findings"]))
+        self.assertIn("Claude re-reading the session", pt["findings"][0])
+        self.assertIn("subagent", " ".join(pt["findings"]))
+        self.assertIn("1 subagent ran on Opus", " ".join(r["action"] for r in pt["recommendations"]))
+        page = spend.render_html(s)
+        for f in pt["findings"]:
+            self.assertIn(html.escape(f), page)
+        for old in ("helper agent", "re-reading the chat", "memory", "Hidden"):
+            self.assertNotIn(old, page)
 
     def test_plain_helpers(self):
         self.assertEqual(spend.plural(1, "session"), "1 session")
@@ -690,6 +711,23 @@ class PageTests(unittest.TestCase):
         self.assertIn('aria-controls="journey-nav"', self.page)
         self.assertEqual(ids.count("journey-nav"), 1)
 
+    def test_sidebar_labels_match_section_headings(self):
+        """Each sidebar label's words appear, in order, in the heading of the section it links to."""
+        nav = re.search(r'<nav class="journey-nav".*?</nav>', self.page, re.S).group(0)
+        links = re.findall(r'<a class="journey-link" href="#([^"]+)">.*?<span class="nav-label">([^<]+)</span>', nav, re.S)
+        self.assertEqual(len(links), len(spend.SECTIONS))
+        for sid, label in links:
+            m = re.search(r'<(?:section|header)[^>]* id="{}"[^>]*>.*?<h([12])[^>]*>(.*?)</h\1>'.format(re.escape(sid)),
+                          self.page, re.S)
+            self.assertIsNotNone(m, sid)
+            heading = html.unescape(re.sub(r"<[^>]+>", "", m.group(2)))
+            words = re.findall(r"[\w']+", html.unescape(label).lower())
+            hwords = re.findall(r"[\w']+", heading.lower())
+            pos = 0
+            for wd in words:
+                self.assertIn(wd, hwords[pos:], "{!r} not in heading {!r}".format(label, heading))
+                pos = hwords.index(wd, pos) + 1
+
     def test_sections_present_even_when_empty(self):
         empty = Fixture()
         self.addCleanup(empty.close)
@@ -713,12 +751,12 @@ class PageTests(unittest.TestCase):
     def test_hidden_calls_are_inside_totals_not_a_total_line(self):
         hero = re.search(r"<header.*?</header>", self.page, re.S).group(0)
         self.assertIn(spend.money(self.s["total"]), hero)
-        self.assertNotIn("idden", hero)
         tiles = re.search(r'<div class="tiles">.*?</div></div>', self.page, re.S).group(0)
-        self.assertNotIn("idden", tiles)
-        for cls in ("stat", "tile", "hero-metric"):
-            for block in re.findall(r'<div class="{}".*?</div>'.format(cls), self.page, re.S):
-                self.assertNotIn("idden", block)
+        blocks = [hero, tiles] + [b for cls in ("stat", "tile", "hero-metric")
+                                  for b in re.findall(r'<div class="{}".*?</div>'.format(cls), self.page, re.S)]
+        for block in blocks:
+            self.assertNotIn("idden", block)
+            self.assertNotIn("ackground", block)
         self.assertNotIn("Logged total", self.page)
         self.assertNotIn("Total with", self.page)
         self.assertGreater(self.s["not_logged"], 0)

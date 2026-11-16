@@ -29,7 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 ESTIMATE_LINE = ("This is an estimate at API prices. On a Pro or Max plan, you don't pay this; "
                  "it's what the same work would cost on the API.")
-PRIVACY_LINE = ("This page shows your messages, agent names and project folders. "
+PRIVACY_LINE = ("This page shows your messages, subagent names and project folders. "
                 "Don't share it as is.")
 HIDDEN_LINE = ("Hidden background calls: Claude Code also works behind the scenes (shrinking long chats, "
                "naming sessions, safety checks) and doesn't save those calls in its logs. "
@@ -70,6 +70,37 @@ COST_PHRASES = {"output": "Claude's replies", "cache_read": "Claude re-reading t
 HIDDEN_ROW = ("hidden", "Hidden background calls",
               "Calls Claude Code makes behind the scenes (shrinking long chats, naming sessions, safety checks) "
               "and doesn't save in its logs. Known once a session closes.")
+
+# The page has its own words. The terminal and --json keep the wording above, unchanged.
+# One term per idea, in this order wherever the cost types repeat: key, label, short form, explanation.
+PAGE_COST = (
+    ("output", "Output", "Output",
+     "Everything Claude writes: answers, code, tool calls and thinking."),
+    ("cache_read", "Re-reading", "Re-reading",
+     "On every turn, Claude re-reads the whole session from the cache. It's cheap per token, "
+     "but it adds up in long sessions."),
+    ("cache_write_5m", "Caching (5 min)", "Caching 5 min",
+     "Saving new parts of the session to the cache, so the next turns can re-read them cheaply. Kept for 5 minutes."),
+    ("cache_write_1h", "Caching (1 hour)", "Caching 1 hour",
+     "The same, kept for 1 hour. It costs more to save."),
+    ("input", "New input", "New input",
+     "Text sent to Claude that isn't in the cache."),
+    ("searches", "Web searches", "Web searches",
+     "Searches Claude ran on the web. Charged per search."),
+    ("hidden", "Background calls", "Background calls",
+     "Calls Claude Code makes on its own, like summarizing a long session. "
+     "They aren't in the logs, so they're known once a session closes."),
+)
+PAGE_LABEL = {k: label for k, label, _, _ in PAGE_COST}
+PAGE_SHORT = {k: short for k, _, short, _ in PAGE_COST}
+PAGE_EXPLAIN = {k: explain for k, _, _, explain in PAGE_COST}
+PAGE_ESTIMATE_LINE = ("This is an estimate at API prices. On a Pro or Max plan you don't pay this. "
+                      "It's what the same work would cost on the API.")
+PAGE_BACKGROUND_LINE = ("Background calls: Claude Code also makes calls on its own, like summarizing a long session, "
+                        "naming a session or running safety checks. It doesn't save them in its logs, so their cost "
+                        "comes from Claude Code's own running total once a session closes. They're included in every total.")
+PAGE_TLDR_KEY = "page_tldr"
+PAGE_TOKEN_LINE = "Tokens are the small pieces of text Claude reads and writes. One token is about 3/4 of a word."
 
 
 # ---------------------------------------------------------------- prices
@@ -583,12 +614,78 @@ def _sonnet_price(prices):
     return prices["models"][keys[-1]] if keys else None, (keys[-1] if keys else None)
 
 
-def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality, day="today's"):
+# TLDR wording. TLDR_TEXT is what the terminal and --json show; TLDR_PAGE is the page's.
+# Both run the same rules over the same numbers, so every figure matches.
+TLDR_TEXT = {
+    "empty": "Too little spend for a summary (under $1.00).",
+    "phrases": COST_PHRASES,
+    "top": "{:.0f}% of {} cost was {}.",
+    "model": "{} was {:.0f}% of the cost.",
+    "model_subs": " {} of {} used it.", "sub_one": "helper agent",
+    "subs": "{} were {:.0f}% of the cost: {} across {}.", "subs_who": "Helper agents", "subs_unit": "agent",
+    "biggest": "Your biggest session cost {}, {:.0f}% of the day.",
+    "yours_one": "Your longest session", "yours_many": "Your {} longest sessions",
+    "reread": "Start a new session when you switch topics, or type /compact to shrink a long one. "
+              "{} {} the whole chat on every turn.",
+    "reread_basis": "Re-reading in {} cost {}. A fresh start is assumed to cut about {:.0f}% of that: {} x {:.2f} = {}.",
+    "opus": "Use Sonnet, not Opus, for routine helper agents. {} ran on Opus. Biggest: {}.", "opus_unit": "helper",
+    "opus_unit_name": "agent",
+    "opus_basis": "Helper agents on Opus cost {}. The same work at {} prices: {}. {} - {} = {}.",
+    "hour": "Use short-term memory (5 min) instead of longer memory (1 hour), "
+            "unless you often pause for more than 5 minutes. Longer memory costs more to save.",
+    "hour_basis": "Saving to longer memory cost {}. The same at the 5-minute rate: {}. {} - {} = {}.",
+    "check": "Check if these helper agents needed to run: {}.",
+    "check_basis": "Your 3 costliest helper agents cost {}, {:.0f}% of the day. No saving estimated.",
+    "background": "Hidden background calls (like shrinking long chats) were {:.0f}% of the total. "
+                  "Fewer long sessions means fewer of them.",
+    "background_basis": "Claude Code's own running total shows {} not in its logs, {:.0f}% of {}. No saving estimated.",
+    "mean_reread": "Most of your cost is Claude re-reading the chat on every turn. Long sessions cost more than long replies.",
+    "mean_output": "Most of your cost is Claude's replies. The model you pick and how much each agent writes matter most.",
+    "mean_other": "Your biggest cost is {}.",
+    "saved": "The tips below could have saved about {} of {} {}.",
+    "none_saved": "No savings found in {} pattern.",
+}
+TLDR_PAGE = {
+    "empty": "Not enough spend for a TLDR. It needs at least $1.00.",
+    "phrases": {"output": "Claude's output", "cache_read": "Claude re-reading the session",
+                "cache_write_5m": "caching for 5 minutes", "cache_write_1h": "caching for 1 hour",
+                "input": "new input", "searches": "web searches", "hidden": "background calls"},
+    "top": "{:.0f}% of {} cost was {}.",
+    "model": "{} was {:.0f}% of the cost.",
+    "model_subs": " {} of {} used it.", "sub_one": "subagent",
+    "subs": "{} were {:.0f}% of the cost: {} across {}.", "subs_who": "Subagents", "subs_unit": "subagent",
+    "biggest": "Your biggest session cost {}, {:.0f}% of the day.",
+    "yours_one": "Your longest session", "yours_many": "Your {} longest sessions",
+    "reread": "Start a new session when you switch topics, or type /compact to shrink a long one. "
+              "{} {} everything on every turn.",
+    "reread_basis": "Re-reading in {} cost {}. Starting fresh is assumed to cut that by about {:.0f}%: {} x {:.2f} = {}.",
+    "opus": "Use Sonnet, not Opus, for routine subagents. {} ran on Opus. Biggest: {}.", "opus_unit": "subagent",
+    "opus_unit_name": "subagent",
+    "opus_basis": "Subagents on Opus cost {}. The same work at {} prices: {}. {} - {} = {}.",
+    "hour": "Cache for 5 minutes instead of 1 hour, unless you often pause for more than 5 minutes. "
+            "Caching for 1 hour costs more.",
+    "hour_basis": "Caching for 1 hour cost {}. The same at the 5-minute rate: {}. {} - {} = {}.",
+    "check": "Check whether these subagents needed to run: {}.",
+    "check_basis": "Your 3 costliest subagents cost {}, {:.0f}% of the day. No savings estimated.",
+    "background": "Background calls (like summarizing long sessions) were {:.0f}% of the total. "
+                  "Fewer long sessions means fewer of them.",
+    "background_basis": "Claude Code's own running total shows {} that isn't in its logs, {:.0f}% of {}. No savings estimated.",
+    "mean_reread": "Most of your cost is Claude re-reading the session on every turn. Long sessions cost more than long replies.",
+    "mean_output": "Most of your cost is Claude's output. The model you pick and how much each agent writes matter most.",
+    "mean_other": "Your biggest cost is {}.",
+    "saved": "The tips below could have saved about {} of {} {}.",
+    "none_saved": "No savings found in {} sessions.",
+}
+
+
+def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality, day="today's", w=None):
     """Findings, meaning and up to three ways to spend less, from fixed rules over the day's numbers.
-    No model call, no network. Savings are estimates at the prices in prices.json."""
+    No model call, no network. Savings are estimates at the prices in prices.json.
+    w is the wording: TLDR_TEXT (the default) or TLDR_PAGE."""
+    w = w or TLDR_TEXT
     if total < MIN_TLDR_TOTAL or not sess_rows:
         return {"empty": True, "findings": [],
-                "meaning": "Too little spend for a summary (under $1.00).",
+                "meaning": w["empty"],
                 "recommendations": []}
     prices = data["prices"]
     pct = lambda v: 100.0 * v / total
@@ -597,22 +694,22 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
     findings = []
     top = max(token_types, key=lambda t: t["cost"])
     if top["cost"] > 0:
-        findings.append("{:.0f}% of {} cost was {}.".format(top["percent"], day, COST_PHRASES[top["key"]]))
+        findings.append(w["top"].format(top["percent"], day, w["phrases"][top["key"]]))
     priced = [m for m in model_rows if m["priced"] and m["cost"] > 0]
     if priced:
         tm = priced[0]
-        line = "{} was {:.0f}% of the cost.".format(_short(tm["model"]), pct(tm["cost"]))
+        line = w["model"].format(_short(tm["model"]), pct(tm["cost"]))
         if sub_rows:
             on = sum(1 for r in sub_rows if tm["model"] in r["models"])
-            line += " {} of {} used it.".format(on, plural(len(sub_rows), "helper agent"))
+            line += w["model_subs"].format(on, plural(len(sub_rows), w["sub_one"]))
         findings.append(line)
     sub_total = sum(r["cost"] for r in sub_rows)
     if sub_rows and pct(sub_total) >= 10:
-        findings.append("Helper agents were {:.0f}% of the cost: {} across {}.".format(
-            pct(sub_total), money(sub_total), plural(len(sub_rows), "agent")))
+        findings.append(w["subs"].format(
+            w["subs_who"], pct(sub_total), money(sub_total), plural(len(sub_rows), w["subs_unit"])))
     else:
         b = sess_rows[0]
-        findings.append("Your biggest session cost {}, {:.0f}% of the day.".format(money(b["total"]), pct(b["total"])))
+        findings.append(w["biggest"].format(money(b["total"]), pct(b["total"])))
 
     # ways to spend less
     recs = []
@@ -629,11 +726,10 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
         base = sum(v for _, v in longest)
         sv = base * REREAD_CUT
         if sv >= MIN_SAVING:
-            yours = "Your longest session" if len(longest) == 1 else "Your {} longest sessions".format(len(longest))
-            recs.append({"action": "Start a new session when you switch topics, or type /compact to shrink a long one. "
-                                   "{} {} the whole chat on every turn.".format(yours, "re-reads" if len(longest) == 1 else "re-read"),
+            yours = w["yours_one"] if len(longest) == 1 else w["yours_many"].format(len(longest))
+            recs.append({"action": w["reread"].format(yours, "re-reads" if len(longest) == 1 else "re-read"),
                          "saving_usd": sv,
-                         "basis": "Re-reading in {} cost {}. A fresh start is assumed to cut about {:.0f}% of that: {} x {:.2f} = {}.".format(
+                         "basis": w["reread_basis"].format(
                              yours.lower(), money(base), 100 * REREAD_CUT, money(base), REREAD_CUT, money(sv))})
 
     # b. Opus subagents priced at Sonnet
@@ -652,12 +748,11 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
             son_cost = sum(x[2] for x in rows)
             sv = opus_cost - son_cost
             if sv >= MIN_SAVING:
-                names = ", ".join("{} ({})".format(ids.get((data["agents"].get(a) or {}).get("id"), "agent"), money(c))
+                names = ", ".join("{} ({})".format(ids.get((data["agents"].get(a) or {}).get("id"), w["opus_unit_name"]), money(c))
                                   for a, c, _ in rows[:3])
-                recs.append({"action": "Use Sonnet, not Opus, for routine helper agents. {} ran on Opus. Biggest: {}.".format(
-                                 plural(len(rows), "helper"), names),
+                recs.append({"action": w["opus"].format(plural(len(rows), w["opus_unit"]), names),
                              "saving_usd": sv,
-                             "basis": "Helper agents on Opus cost {}. The same work at {} prices: {}. {} - {} = {}.".format(
+                             "basis": w["opus_basis"].format(
                                  money(opus_cost), _short(sname), money(son_cost), money(opus_cost), money(son_cost), money(sv))})
 
     # c. 1-hour cache writes at the 5-minute rate
@@ -672,11 +767,9 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
         h1 += r["parts"]["cache_write_1h"]
         h5 += r["parts"]["cache_write_1h"] * pr["cache_write_5m"] / pr["cache_write_1h"]
     if h1 - h5 >= MIN_SAVING:
-        recs.append({"action": "Use short-term memory (5 min) instead of longer memory (1 hour), "
-                               "unless you often pause for more than 5 minutes. Longer memory costs more to save.",
+        recs.append({"action": w["hour"],
                      "saving_usd": h1 - h5,
-                     "basis": "Saving to longer memory cost {}. The same at the 5-minute rate: {}. {} - {} = {}.".format(
-                         money(h1), money(h5), money(h1), money(h5), money(h1 - h5))})
+                     "basis": w["hour_basis"].format(money(h1), money(h5), money(h1), money(h5), money(h1 - h5))})
 
     recs.sort(key=lambda r: -r["saving_usd"])
     # d and e carry no saving estimate; they fill open places only
@@ -684,29 +777,27 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
     tops = [r for r in sub_rows[:3] if r["cost"] > 0]
     tcost = sum(r["cost"] for r in tops)
     if len(sub_rows) >= 3 and tcost / total >= INFO_SHARE and tcost >= 1.0:
-        info.append({"action": "Check if these helper agents needed to run: {}.".format(
+        info.append({"action": w["check"].format(
                          ", ".join("{} ({})".format(r["name"], money(r["cost"])) for r in tops)),
                      "saving_usd": 0.0,
-                     "basis": "Your 3 costliest helper agents cost {}, {:.0f}% of the day. No saving estimated.".format(money(tcost), pct(tcost))})
+                     "basis": w["check_basis"].format(money(tcost), pct(tcost))})
     nl = quality["not_logged"] or 0.0
     if nl / total >= 0.10:
-        info.append({"action": "Hidden background calls (like shrinking long chats) were {:.0f}% of the total. "
-                               "Fewer long sessions means fewer of them.".format(pct(nl)),
+        info.append({"action": w["background"].format(pct(nl)),
                      "saving_usd": 0.0,
-                     "basis": "Claude Code's own running total shows {} not in its logs, {:.0f}% of {}. No saving estimated.".format(
-                         money(nl), pct(nl), money(total))})
+                     "basis": w["background_basis"].format(money(nl), pct(nl), money(total))})
     recs = (recs + info)[:3]
     saved = sum(r["saving_usd"] for r in recs)
 
     # meaning
     if top["key"] == "cache_read" and top["percent"] >= 40:
-        m1 = "Most of your cost is Claude re-reading the chat on every turn. Long sessions cost more than long replies."
+        m1 = w["mean_reread"]
     elif top["key"] == "output" and top["percent"] >= 40:
-        m1 = "Most of your cost is Claude's replies. The model you pick and how much each agent writes matter most."
+        m1 = w["mean_output"]
     else:
-        m1 = "Your biggest cost is {}.".format(COST_PHRASES[top["key"]])
-    m2 = ("The tips below could have saved about {} of {} {}.".format(money(saved), day, money(total))
-          if saved > 0 else "No savings found in {} pattern.".format(day))
+        m1 = w["mean_other"].format(w["phrases"][top["key"]])
+    m2 = (w["saved"].format(money(saved), day, money(total))
+          if saved > 0 else w["none_saved"].format(day))
     return {"empty": False, "findings": findings, "meaning": m1 + " " + m2, "recommendations": recs}
 
 
@@ -915,6 +1006,7 @@ def summarize(data, target, ndays=7, now=None):
         "prices_date": pr.get("date_read"), "prices_age_days": price_age_days(pr),
         "prices_source": pr.get("source_url"),
     }
+    day_word = "today's" if target == date.today() else "the day's"
     return {
         "date": target.isoformat(), "generated": _iso(datetime.fromtimestamp(now).astimezone()),
         "estimate_line": ESTIMATE_LINE, "days_shown": ndays,
@@ -925,8 +1017,10 @@ def summarize(data, target, ndays=7, now=None):
         "token_types": token_types, "models": model_rows, "sessions": sess_rows,
         "subagents": sub_rows, "projects": proj_rows, "hours": hours, "days": days,
         "chart_series": series, "quality": quality,
-        "tldr": build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality,
-                           "today's" if target == date.today() else "the day's"),
+        "tldr": build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality, day_word),
+        # the same TLDR in the page's words; render_html uses it, --json leaves it out
+        PAGE_TLDR_KEY: build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality,
+                                  day_word, TLDR_PAGE),
     }
 
 
@@ -1269,12 +1363,69 @@ def _asset(name):
         return f.read()
 
 
-# Journey links: section id, label, icon. The page is one document, so the CSS and
-# the navigation script are inlined from page.css and page.js.
-SECTIONS = (("overview", "Overview", "compass"), ("summary", "TLDR", "check"),
-            ("breakdown", "Cost breakdown", "file"), ("models", "Models & projects", "grid"),
-            ("sessions", "Sessions & agents", "clients"), ("history", "Over time", "clock"),
-            ("method", "How counted", "book"))
+def page_tips_heading(n):
+    if n == 1:
+        return "Best tip to reduce spend"
+    return "Top {} tips to reduce spend".format(n) if n else "Tips to reduce spend"
+
+
+def page_open_text(n):
+    """The one plain line about sessions whose background calls aren't known yet."""
+    if n == 1:
+        return "1 session is still open. Its background calls get added when it closes."
+    return "{} are still open. Their background calls get added when they close.".format(plural(n, "session"))
+
+
+def page_why_text(why):
+    names = {"interrupted": "stopped by you", "end of file": "cut off when a session closed, or still running",
+             "no response written": "no reply saved"}
+    return ", ".join("{} {}".format(v, names.get(k, k)) for k, v in sorted(why.items()))
+
+
+def page_counted_rows(q):
+    """(label, value, tooltip) rows for the page's 'How it's counted'. Same facts as counted_rows, page words."""
+    rows = [
+        ("Log files read", num(q["files_read"]),
+         "Claude Code's saved session files that were read for this page."),
+        ("Reply lines read", num(q["assistant_lines"]),
+         "Lines in the logs where Claude replied, on this day."),
+        ("Replies counted", "{} (repeats removed)".format(num(q["responses"])),
+         "The same reply can be saved more than once. Each one is counted once."),
+        ("Empty lines skipped", num(q["zero_usage_skipped"]),
+         "Lines with no tokens, like error notes. They cost nothing."),
+        ("Calls with no token count", "{} of {}{}".format(
+            num(q["requests_no_usage"]), num(q["requests_logged"]),
+            " ({})".format(page_why_text(q["requests_no_usage_why"])) if q["requests_no_usage"] else ""),
+         "Calls to Claude that started but have no token count in the logs, so they aren't in the total."),
+        ("Session summaries (/compact)", "{}, {} tokens summarized. Each one is a background call.".format(
+            plural(q["compactions"], "time"), tok_short(q["compacted_tokens"])),
+         "When a session gets long, Claude Code summarizes it to make room. That's a background call."),
+        ("Background calls", "{} from Claude Code's own running total, for closed sessions. Included in every total.{}".format(
+            money(q["not_logged"]),
+            " {} still open, not added yet.".format(plural(q["open_sessions"], "session")) if q["open_sessions"] else ""),
+         "Calls Claude Code makes on its own and doesn't save in its logs. They're part of every total."),
+        ("Models with no price", ", ".join(q["unpriced_models"]) or "None",
+         "Models missing from the price list (prices.json). Their cost is left out of every total."),
+        ("Prices", "Checked {} ({}) from {}".format(plain_date(q["prices_date"]), ago(q["prices_age_days"]), q["prices_source"]),
+         "Anthropic's API price page, saved in prices.json."),
+    ]
+    if q["dupe_conflicts"]:
+        rows.insert(3, ("Saved twice, counts differed", "{} (kept the last)".format(num(q["dupe_conflicts"])),
+                        "The same reply was saved twice with different token counts. The last one is used."))
+    if q["unreadable_lines"]:
+        rows.insert(1, ("Broken lines skipped", num(q["unreadable_lines"]),
+                        "Lines that couldn't be read, usually because they were still being written."))
+    return rows
+
+
+# Sidebar links: section id, label, icon. Each label is the heading of the section it
+# links to, shortened only where the heading is long; the order is the page order.
+# The page is one document, so the CSS and the navigation script are inlined from
+# page.css and page.js.
+SECTIONS = (("overview", "Overview", "compass"), ("tldr", "TLDR", "check"),
+            ("cost-by-type", "Cost by type", "file"), ("cost-by-model", "Cost by model", "grid"),
+            ("biggest-sessions", "Biggest sessions", "clients"), ("cost-by-day", "Cost by day", "clock"),
+            ("how-its-counted", "How it's counted", "book"))
 SPRITE = (
     '<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>'
     '<symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m16 8-3 5-5 3 3-5z"/></symbol>'
@@ -1335,7 +1486,7 @@ def stacked_chart(labels, stacks, totals, extra=None, label_every=1, show_totals
         if extra and extra[i] > 0:
             bh = ph * extra[i] / mx
             y -= bh
-            p.append('<rect class="gapfill" fill="url(#{})" x="{:.1f}" y="{:.1f}" width="{:.1f}" height="{:.1f}" rx="2"><title>{}: hidden background calls {}</title></rect>'.format(
+            p.append('<rect class="gapfill" fill="url(#{})" x="{:.1f}" y="{:.1f}" width="{:.1f}" height="{:.1f}" rx="2"><title>{}: background calls {}</title></rect>'.format(
                 html.escape(pid), x, y, bw, max(bh - 1, 0.5), html.escape(str(labels[i])), money(extra[i])))
         if totals[i] > 0 and (show_totals or totals[i] >= 0.25 * max(totals)):
             p.append('<text class="total{}" x="{:.1f}" y="{:.1f}" text-anchor="middle">{}</text>'.format(
@@ -1353,7 +1504,8 @@ def legend(series, has_other, has_gap=False):
     if has_other:
         items.append('<span><i class="sw s4"></i>Other models</span>')
     if has_gap:
-        items.append('<span title="{}"><i class="sw gapsw"></i>Hidden background calls</span>'.format(html.escape(HIDDEN_LINE)))
+        items.append('<span title="{}"><i class="sw gapsw"></i>{}</span>'.format(
+            html.escape(PAGE_BACKGROUND_LINE), PAGE_LABEL["hidden"]))
     return '<div class="legend">{}</div>'.format("".join(items))
 
 
@@ -1379,6 +1531,12 @@ def _table_open(label, cls="", style=""):
 
 def _chart_open(label):
     return '<div class="scroll chart" tabindex="0" role="region" aria-label="{}">'.format(html.escape(label))
+
+
+def _tokens_tip(t):
+    """Token counts by type, in the page's order, for a tooltip."""
+    return "Tokens: output {}, re-reading {}, caching {}, new input {}.".format(
+        num(t["output"]), num(t["cache_read"]), num(cache_writes(t)), num(t["input"]))
 
 
 def _tok_td(n, cls="r"):
@@ -1427,13 +1585,13 @@ def render_html(s, refresh=False, warning=None):
 
     # hero
     p.append('<header id="overview" class="hero" aria-labelledby="page-title"><div class="hero-grid"><div>'
-             '<h1 id="page-title">Claude Code spend</h1><p class="date">{}</p><p class="intro">{}</p></div>'
+             '<h1 id="page-title">Spend overview</h1><p class="date">{}</p><p class="intro">{}</p></div>'
              '<div class="hero-metric"><div class="value">{}</div><span class="label">Estimated cost at API prices</span></div></div>'
-             '<div class="stats">'.format(esc(day_name(target)), esc(ESTIMATE_LINE), money(s["total"])))
+             '<div class="stats">'.format(esc(day_name(target)), esc(PAGE_ESTIMATE_LINE), money(s["total"])))
 
     def stat(label, value, tip):
         p.append('<div class="stat" title="{}"><span>{}</span><b>{}</b></div>'.format(esc(tip), esc(label), esc(value)))
-    stat("vs " + vs, change_text(s["change"], vs).replace(" than " + vs, "").replace("Same as " + vs, "Same"),
+    stat("vs. " + vs, change_text(s["change"], vs).replace(" than " + vs, "").replace("Same as " + vs, "Same"),
          "{}: {}.".format(vs[:1].upper() + vs[1:], money(s["yesterday"])))
     stat("Daily average", money(s["average"]), "Average cost per day over the last {}.".format(plural(s["days_shown"], "day")))
     stat("Updated", hhmm(s["generated"]), "When this page was made.")
@@ -1442,26 +1600,26 @@ def render_html(s, refresh=False, warning=None):
         p.append('<p class="note warn">Warning: {}</p>'.format(esc(warning)))
     if q["open_sessions"]:
         p.append('<p class="status-line"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock"/></svg>'
-                 '<span>{}</span></p>'.format(esc(open_text(q["open_sessions"]))))
+                 '<span>{}</span></p>'.format(esc(page_open_text(q["open_sessions"]))))
     if q["not_logged"] or q["open_sessions"]:
         p.append('<details class="estimate-details"><summary>How this estimate works</summary><div class="detail-body">')
         if q["not_logged"]:
-            p.append('<p>Includes {} of hidden background calls (logged {}).</p>'.format(
+            p.append('<p>Includes {} in background calls. The logs show {}.</p>'.format(
                 esc(money(q["not_logged"])), esc(money(s["logged_total"]))))
-        p.append('<p>{}</p></div></details>'.format(esc(HIDDEN_LINE)))
+        p.append('<p>{}</p></div></details>'.format(esc(PAGE_BACKGROUND_LINE)))
 
     # tldr
-    t = s["tldr"]
-    p.append('<section class="section" id="summary"><article class="block tldr">'
+    t = s.get(PAGE_TLDR_KEY) or s["tldr"]
+    p.append('<section class="section" id="tldr"><article class="block tldr">'
              '<h2 title="Too long, didn\'t read: the short version.">TLDR</h2>')
     if t["empty"]:
         p.append('<p class="lead">{}</p>'.format(esc(t["meaning"])))
     else:
-        p.append('<div class="tl"><h3>What happened</h3><ul>{}</ul></div>'.format(
+        p.append('<div class="tl"><h3>Findings</h3><ul>{}</ul></div>'.format(
             "".join("<li>{}</li>".format(esc(f)) for f in t["findings"])))
-        p.append('<div class="tl insight"><h3>What it means</h3><p>{}</p></div>'.format(esc(t["meaning"])))
-        p.append('<div class="tl"><h3 title="Hover a figure to see how it was worked out.">{}</h3>'.format(
-            tips_heading(len(t["recommendations"]))))
+        p.append('<div class="tl insight"><h3>Meaning</h3><p>{}</p></div>'.format(esc(t["meaning"])))
+        p.append('<div class="tl"><h3 title="Hover a dollar figure to see the math.">{}</h3>'.format(
+            page_tips_heading(len(t["recommendations"]))))
         if t["recommendations"]:
             p.append("<ol>")
             for r in t["recommendations"]:
@@ -1474,22 +1632,24 @@ def render_html(s, refresh=False, warning=None):
         p.append("</div>")
     p.append('</article></section>')
 
-    # where the money went
-    p.append('<section class="section" id="breakdown"><article class="block"><h2>Where the money went</h2>'
-             '<p class="lead">What the money paid for. Counted in tokens (word pieces). One token is about 3/4 of a word.</p>')
+    # cost by type: the table, its split bar and the token tiles all keep the PAGE_COST order;
+    # colors go by size, so the biggest type has the strongest color
+    p.append('<section class="section" id="cost-by-type"><article class="block"><h2>Cost by type</h2>'
+             '<p class="lead">What the cost paid for: Claude\'s output, re-reading the session, caching, new input, '
+             'web searches and background calls. {}</p>'.format(esc(PAGE_TOKEN_LINE)))
     ranked = sorted(s["token_types"], key=lambda t: -t["cost"])
     rank = {t["key"]: min(i + 1, 5) for i, t in enumerate(ranked)}
     if s["total"] > 0:
         p.append('<div class="split">')
-        for t in ranked:
+        for t in s["token_types"]:
             if t["cost"] > 0:
                 p.append('<i class="s{}" style="width:{:.3f}%" title="{}: {} ({:.1f}%)"></i>'.format(
-                    rank[t["key"]], t["percent"], esc(t["label"]), money(t["cost"]), t["percent"]))
+                    rank[t["key"]], t["percent"], esc(PAGE_LABEL[t["key"]]), money(t["cost"]), t["percent"]))
         p.append('</div>')
     p.append('{}<thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
-        _table_open("Where the money went table"),
-        _th("What", "What the money paid for."),
-        _th("Tokens", TOKEN_LINE, True),
+        _table_open("Cost by type table"),
+        _th("Type", "What the cost paid for."),
+        _th("Tokens", PAGE_TOKEN_LINE, True),
         _th("Cost", "Estimated cost at API prices.", True),
         _th("Share", "Share of the day's cost.", True)))
     for t in s["token_types"]:
@@ -1497,36 +1657,37 @@ def render_html(s, refresh=False, warning=None):
         cell = (_td("--") if t["tokens"] is None else
                 _td(plural(t["tokens"], "search", "searches")) if t["key"] == "searches" else _tok_td(t["tokens"]))
         p.append('<tr><td class="p">{}{}<div class="dim small">{}</div></td>{}{}{}</tr>'.format(
-            sw, _nb(t["label"]), esc(t["explain"]), cell,
+            sw, _nb(PAGE_LABEL[t["key"]]), esc(PAGE_EXPLAIN[t["key"]]), cell,
             _td(money(t["cost"])), _td("{:.1f}%".format(t["percent"]))))
     p.append('</tbody></table></div></article>')
 
-    # token tiles
+    # token tiles, in the same order as the table above
     tk = {t["key"]: t["tokens"] for t in s["token_types"] if t["tokens"] is not None}
-    p.append('<article class="block"><h3 title="{}">Tokens used</h3><div class="tiles">'.format(esc(TOKEN_LINE)))
-    for lab, val, tip in (("New text sent", tk["input"], "Text sent to Claude that wasn't saved to memory."),
-                          ("Claude's replies", tk["output"], "Everything Claude wrote."),
-                          ("Saved to memory", tk["cache_write_5m"] + tk["cache_write_1h"], "Chat saved so Claude can re-read it cheaply (5 min and 1 hour)."),
-                          ("Re-read", tk["cache_read"], "Chat Claude read again from memory on each turn.")):
+    p.append('<article class="block"><h3 title="{}">Tokens by type</h3><div class="tiles">'.format(esc(PAGE_TOKEN_LINE)))
+    for lab, val, tip in ((PAGE_LABEL["output"], tk["output"], "Tokens Claude wrote."),
+                          (PAGE_LABEL["cache_read"], tk["cache_read"], "Tokens Claude re-read from the cache."),
+                          ("Caching", tk["cache_write_5m"] + tk["cache_write_1h"], "Tokens saved to the cache, 5 min and 1 hour together."),
+                          (PAGE_LABEL["input"], tk["input"], "Tokens sent to Claude that weren't in the cache.")):
         p.append('<div class="tile" title="{}"><span>{}</span><b title="{} tokens">{}</b></div>'.format(
             esc(tip), esc(lab), num(val), tok_short(val)))
     p.append('</div></article></section>')
 
-    # by model
-    p.append('<section class="section" id="models"><article class="block"><h2>By model</h2>'
-             '<p class="lead">Each Claude model used in the last {}. '
-             'Token counts are for this day only. Costs include hidden background calls.</p>'.format(plural(s["days_shown"], "day")))
-    p.append('{}<thead><tr>{}</tr></thead><tbody>'.format(_table_open("By model table", "wide-table"), "".join([
-        _th("Model", "The Claude model. Hover a name for its full id."),
-        _th("Cost", "Cost on this day, hidden background calls included.", True),
-        _th("Answers", "How many times this model answered.", True),
-        _th("Replies", "Tokens Claude wrote.", True),
-        _th("Re-read", "Tokens of chat Claude read again from memory.", True),
-        _th("Memory 5m", "Tokens saved to short-term memory (5 min).", True),
-        _th("Memory 1h", "Tokens saved to longer memory (1 hour).", True),
-        _th("New text", "Tokens of new text sent, not saved to memory.", True),
-        _th("{}-day cost".format(s["days_shown"]), "Cost over the last {}, hidden background calls included.".format(plural(s["days_shown"], "day")), True),
-        _th("Hidden calls*", "The part of the {}-day cost that is hidden background calls. See the note below.".format(s["days_shown"]), True)])))
+    # cost by model
+    days_text = plural(s["days_shown"], "day")
+    p.append('<section class="section" id="cost-by-model"><article class="block"><h2>Cost by model</h2>'
+             '<p class="lead">Every Claude model used in the last {}. '
+             'Token counts are for this day only. Costs include background calls.</p>'.format(days_text))
+    p.append('{}<thead><tr>{}</tr></thead><tbody>'.format(_table_open("Cost by model table", "wide-table"), "".join([
+        _th("Model", "The Claude model. Hover a name for its full ID."),
+        _th("Cost", "This day's cost, background calls included.", True),
+        _th("Replies", "How many times this model replied.", True),
+        _th(PAGE_SHORT["output"], "Tokens Claude wrote.", True),
+        _th(PAGE_SHORT["cache_read"], "Tokens Claude re-read from the cache.", True),
+        _th(PAGE_SHORT["cache_write_5m"], "Tokens saved to the cache for 5 minutes.", True),
+        _th(PAGE_SHORT["cache_write_1h"], "Tokens saved to the cache for 1 hour.", True),
+        _th(PAGE_SHORT["input"], "Tokens sent to Claude that weren't in the cache.", True),
+        _th("{}-day cost".format(s["days_shown"]), "Cost over the last {}, background calls included.".format(days_text), True),
+        _th(PAGE_LABEL["hidden"] + "*", "The part of the {}-day cost that's background calls. See the note below.".format(s["days_shown"]), True)])))
     for m in s["models"]:
         t = m["tokens"]
         p.append('<tr><td class="nw">{}{}</td>{}{}{}{}{}{}{}{}{}</tr>'.format(
@@ -1537,73 +1698,73 @@ def render_html(s, refresh=False, warning=None):
             _td(money(m["window_cost"]) if m["priced"] else "no price"),
             _td(money(m["window_not_logged"]) if m["window_not_logged"] else "")))
     if not s["models"]:
-        p.append('<tr><td colspan="10" class="dim">Nothing used in these days.</td></tr>')
-    p.append('</tbody></table></div><p class="note">* Included in the cost columns. Calls Claude Code makes behind the scenes and doesn\'t save in its logs, '
-             'from its own running total, for closed sessions. A model marked "no price" is missing from the price list '
-             '(prices.json) and is left out of every total.</p></article>')
+        p.append('<tr><td colspan="10" class="dim">No models used in these days.</td></tr>')
+    p.append('</tbody></table></div><p class="note">* Included in the cost columns. Background calls come from Claude Code\'s '
+             'own running total, for closed sessions. A model marked "no price" isn\'t in the price list (prices.json), '
+             'so it\'s left out of every total.</p></article>')
 
-    # projects
-    p.append('<article class="block"><h3>By project</h3><p class="lead">Cost by the folder Claude Code worked in.</p>')
+    # cost by project
+    p.append('<article class="block"><h3>Cost by project</h3><p class="lead">Each folder Claude Code worked in on this day.</p>')
     p.append('{}<thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
-        _table_open("By project table"),
-        _th("Folder", "The project folder Claude Code was working in."),
-        _th("Sessions", "Chats in this folder on this day.", True),
-        _th("Helpers", "Helper agents started from those chats.", True),
-        _th("Cost", "Estimated cost at API prices, hidden background calls included.", True)))
+        _table_open("Cost by project table"),
+        _th("Folder", "The project folder Claude Code worked in."),
+        _th("Sessions", "Sessions in this folder on this day.", True),
+        _th("Subagents", "Subagents those sessions started.", True),
+        _th("Cost", "Estimated cost at API prices, background calls included.", True)))
     for r in s["projects"]:
         p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(r["project"]), _td(num(r["sessions"])), _td(num(r["subagents"])), _td(money(r["cost"]), "r tot")))
     if not s["projects"]:
-        p.append('<tr><td colspan="4" class="dim">No activity on this day.</td></tr>')
+        p.append('<tr><td colspan="4" class="dim">No sessions on this day.</td></tr>')
     p.append('</tbody></table></div></article></section>')
 
-    # sessions
+    # biggest sessions: the money columns run in the order they add up to the total
     shown = min(len(s["sessions"]), TOP_SESSIONS)
-    p.append('<section class="section" id="sessions"><article class="block"><h2 title="A session is one Claude Code chat.">Biggest sessions</h2>'
-             '<p class="lead">Costliest first, helper agents included. Showing {}.</p>'.format(
+    p.append('<section class="section" id="biggest-sessions"><article class="block">'
+             '<h2 title="A session is one Claude Code conversation, from start until you close it.">Biggest sessions</h2>'
+             '<p class="lead">Costliest first, subagents included. Showing {}.</p>'.format(
                  plural(shown, "session") if shown == len(s["sessions"]) else "{} of {}".format(shown, plural(len(s["sessions"]), "session"))))
     p.append('{}<thead><tr>{}</tr></thead><tbody>'.format(_table_open("Biggest sessions table", "wide-table"), "".join([
-        _th("Started", "When the session began, your local time."),
-        _th("Project", "The folder Claude Code was working in."),
-        _th("First message", "The first thing you typed in the session. Hover to see it all."),
+        _th("Started", "When the session started, your local time."),
+        _th("Project", "The folder Claude Code worked in."),
+        _th("First message", "The first thing you typed in the session. Hover to see all of it."),
         _th("Models", "Models used, biggest cost first."),
-        _th("Main chat", "Cost of the chat itself, without helper agents.", True),
-        _th("Helpers", "Cost of the helper agents this session started.", True),
-        _th("Agents", "How many helper agents it started.", True),
-        _th("Total", "Main chat plus helpers plus hidden background calls.", True),
-        _th("Hidden", "The part of the total that is hidden background calls. \"Not yet\" means the session is still open, so they aren't added yet.", True)])))
+        _th("Subagent count", "How many subagents this session started.", True),
+        _th("Main session", "Cost of the session itself, without its subagents.", True),
+        _th("Subagents", "Cost of the subagents this session started.", True),
+        _th(PAGE_SHORT["hidden"], "The part of the total that's background calls. \"Not yet\" means the session is still open, so they aren't added yet.", True),
+        _th("Total", "Main session plus subagents plus background calls.", True)])))
     for r in s["sessions"][:TOP_SESSIONS]:
-        badge = '<span class="tag run" title="Active in the last 5 minutes">running</span>' if r["running"] else ""
-        nl = ('<span title="Still open; known once it closes">not yet</span>' if r["not_logged"] is None
+        badge = '<span class="tag run" title="Active in the last 5 minutes.">running</span>' if r["running"] else ""
+        nl = ('<span title="Still open. Added when it closes.">not yet</span>' if r["not_logged"] is None
               else (money(r["not_logged"]) if r["not_logged"] else ""))
         p.append('<tr><td class="nw">{}</td><td class="nw">{}</td><td class="p"><div style="display:flex;align-items:center">{}{}</div></td><td class="nw">{}</td>{}{}{}{}{}</tr>'.format(
             esc(when(r["start"], target)), esc(r["project"]), _trunc(r["prompt"]), badge,
             _models_html(r["models"]),
-            _td(money(r["main"])), _td(money(r["sub"])), _td(num(r["subagents"])),
-            _td(money(r["total"]), "r tot"), _td(nl)))
+            _td(num(r["subagents"])), _td(money(r["main"])), _td(money(r["sub"])), _td(nl),
+            _td(money(r["total"]), "r tot")))
     if not s["sessions"]:
-        p.append('<tr><td colspan="9" class="dim">No activity on this day.</td></tr>')
+        p.append('<tr><td colspan="9" class="dim">No sessions on this day.</td></tr>')
     p.append('</tbody></table></div></article>')
 
-    # subagents
+    # biggest subagents
     shown = min(len(s["subagents"]), TOP_SUBAGENTS)
-    p.append('<article class="block"><h3 title="Helper agents (subagents) are extra Claude agents a session starts to do a side job.">'
-             'Biggest helper agents</h3><p class="lead">Extra agents a session starts for a side job. Costliest first, '
-             'from all sessions, priced by the model that did the work. Showing {}.</p>'.format(
-                 plural(shown, "agent") if shown == len(s["subagents"]) else "{} of {}".format(shown, plural(len(s["subagents"]), "agent"))))
-    p.append('{}<thead><tr>{}</tr></thead><tbody>'.format(_table_open("Biggest helper agents table", "wide-table"), "".join([
-        _th("Name", "The agent's name, or its first instruction when it has none."),
-        _th("Model", "The model that actually did the work."),
+    p.append('<article class="block"><h3 title="Subagents are extra agents a session starts to take on part of the work.">'
+             'Biggest subagents</h3><p class="lead">Extra agents a session starts to take on part of the work. Costliest first, '
+             'across all sessions, priced by the model that did the work. Showing {}.</p>'.format(
+                 plural(shown, "subagent") if shown == len(s["subagents"]) else "{} of {}".format(shown, plural(len(s["subagents"]), "subagent"))))
+    p.append('{}<thead><tr>{}</tr></thead><tbody>'.format(_table_open("Biggest subagents table", "wide-table"), "".join([
+        _th("Name", "The subagent's name, or its first instruction if it has none."),
+        _th("Model", "The model that did the work."),
         _th("Started from", "The first message of the session that started it."),
         _th("Cost", "Estimated cost at API prices.", True),
-        _th("Tokens", "All tokens. Hover a number for the breakdown.", True),
-        _th("Answers", "How many times it answered.", True),
+        _th("Tokens", "All tokens. Hover a number to see them by type.", True),
+        _th("Replies", "How many times it replied.", True),
         _th("Time", "When it ran, your local time."),
         _th("Took", "How long it ran.", True),
         _th("Status", "Done, running (active in the last 5 minutes) or stopped.")])))
     for r in s["subagents"][:TOP_SUBAGENTS]:
         tk = r["tokens"]
-        tip = "replies {}, re-read {}, saved to memory {}, new text {}".format(
-            num(tk["output"]), num(tk["cache_read"]), num(cache_writes(tk)), num(tk["input"]))
+        tip = _tokens_tip(tk)
         req = r["requested_model"]
         asked = (' <span class="dim">(asked for {})</span>'.format(esc(req[:1].upper() + req[1:]))
                  if isinstance(req, str) and req not in ("inherit", "") and not any(req in m for m in r["models"]) else "")
@@ -1617,48 +1778,48 @@ def render_html(s, refresh=False, warning=None):
                      esc(time_range(r["start"], r["end"])), _td(duration(r["duration_s"])),
                      '<span class="tag run" style="margin-left:0">running</span>' if r["status"] == "running" else esc(status)))
     if not s["subagents"]:
-        p.append('<tr><td colspan="9" class="dim">No helper agents on this day.</td></tr>')
+        p.append('<tr><td colspan="9" class="dim">No subagents on this day.</td></tr>')
     p.append('</tbody></table></div></article></section>')
 
-    # days
+    # cost by day
     dstacks = [_stack(dd["by_model"], series) for dd in s["days"]]
     has_other = any(c == "s4" for st in dstacks for c, _, _ in st)
     gaps = [dd["not_logged"] for dd in s["days"]]
     n = len(s["days"])
     labels = [datetime.strptime(dd["date"], "%Y-%m-%d").strftime("%a %d" if n <= 14 else "%b %d").replace(" 0", " ") for dd in s["days"]]
-    heading = "Last {} days".format(n)
-    p.append('<section class="section" id="history"><article class="block"><h2>{}</h2><p class="lead">Each bar shows the day\'s full cost.{}</p>{}{}{}</div>'.format(
-        heading, " The striped part is hidden background calls." if any(g > 0 for g in gaps) else "",
-        legend(series, has_other, any(g > 0 for g in gaps)), _chart_open(heading + " chart"),
+    p.append('<section class="section" id="cost-by-day"><article class="block"><h2>Cost by day</h2>'
+             '<p class="lead">The last {}. Each bar is the day\'s full cost.{}</p>{}{}{}</div>'.format(
+        plural(n, "day"), " The striped part is background calls." if any(g > 0 for g in gaps) else "",
+        legend(series, has_other, any(g > 0 for g in gaps)), _chart_open("Cost by day chart"),
         stacked_chart(labels, dstacks, [dd["total"] for dd in s["days"]], extra=gaps,
                       label_every=1 if n <= 14 else max(1, n // 10), show_totals=n <= 14,
-                      pid="hatch-week", title=heading + " estimated API cost by model")))
+                      pid="hatch-week", title="Cost by day, split by model")))
     p.append('{}<thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
-        _table_open("Daily cost table", "narrow", "margin-top:24px"),
+        _table_open("Cost by day table", "narrow", "margin-top:24px"),
         _th("Day", "Newest first."),
-        _th("Cost", "Estimated cost at API prices, hidden background calls included.", True),
-        _th("Hidden calls", "The part of the cost that is hidden background calls.", True),
-        _th("Still open", "Sessions not closed yet, so their hidden calls aren't added yet.", True)))
+        _th("Cost", "Estimated cost at API prices, background calls included.", True),
+        _th(PAGE_SHORT["hidden"], "The part of the cost that's background calls.", True),
+        _th("Still open", "Sessions not closed yet, so their background calls aren't added yet.", True)))
     for dd, lab in zip(reversed(s["days"]), reversed(labels)):
         p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(lab), _td(money(dd["total"])),
                                                     _td(money(dd["not_logged"]) if dd["not_logged"] else ""),
                                                     _td(num(dd["open_sessions"]) if dd["open_sessions"] else "")))
     p.append('</tbody></table></div></article>')
 
-    # hours
+    # cost by hour
     hstacks = [_stack(h["by_model"], series) for h in s["hours"]]
     has_other = any(c == "s4" for st in hstacks for c, _, _ in st)
-    p.append('<article class="block"><h3>By hour</h3><p class="lead">Your local time. Hover a bar to see each model\'s cost. '
-             'Hidden background calls aren\'t tied to an hour, so they aren\'t here.</p>{}{}{}</div></article></section>'.format(
-        legend(series, has_other), _chart_open("By hour chart"),
+    p.append('<article class="block"><h3>Cost by hour</h3><p class="lead">Your local time. Hover a bar to see each model\'s cost. '
+             'Background calls aren\'t tied to an hour, so they aren\'t here.</p>{}{}{}</div></article></section>'.format(
+        legend(series, has_other), _chart_open("Cost by hour chart"),
         stacked_chart([hour_name(h["hour"]).replace(" am", "a").replace(" pm", "p") for h in s["hours"]], hstacks,
                       [h["total"] for h in s["hours"]], label_every=1, show_totals=False,
-                      pid="hatch-hour", title="By hour estimated API cost by model")))
+                      pid="hatch-hour", title="Cost by hour, split by model")))
 
-    # how this was counted
-    p.append('<section class="section" id="method"><article class="block"><h2>How this was counted</h2>'
-             '<p class="lead">What was read, and what couldn\'t be counted, on this day.</p><dl>')
-    for k, v, tip in counted_rows(q):
+    # how it's counted
+    p.append('<section class="section" id="how-its-counted"><article class="block"><h2>How it\'s counted</h2>'
+             '<p class="lead">What was read on this day, and what couldn\'t be counted.</p><dl>')
+    for k, v, tip in page_counted_rows(q):
         p.append('<div class="kv"><dt title="{}">{}</dt><dd>{}</dd></div>'.format(esc(tip), esc(k), esc(v)))
     p.append('</dl></article>')
 
@@ -1770,6 +1931,7 @@ def main(argv=None):
             return 0
     s = run_once(args, prices, target, root)
     if args.json:
+        s.pop(PAGE_TLDR_KEY, None)
         s["prices_warning"] = warning
         print(json.dumps(s, indent=2))
         return 0
