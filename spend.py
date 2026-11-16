@@ -1597,7 +1597,7 @@ def render_html(s, refresh=False, warning=None):
     stat("vs. " + vs, change_text(s["change"], vs).replace(" than " + vs, "").replace("Same as " + vs, "Same"),
          "{}: {}.".format(vs[:1].upper() + vs[1:], money(s["yesterday"])))
     stat("Daily average", money(s["average"]), "Average cost per day over the last {}.".format(plural(s["days_shown"], "day")))
-    stat("Updated", hhmm(s["generated"]), "When this page was made.")
+    stat("Updated", when(s["generated"], ""), "When this page was made.")
     p.append('</div></header>')
     if warning:
         p.append('<p class="note warn">Warning: {}</p>'.format(esc(warning)))
