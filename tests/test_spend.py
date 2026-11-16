@@ -718,6 +718,10 @@ class PageTests(unittest.TestCase):
         links = re.findall(r'<a class="journey-link" href="#([^"]+)">.*?<span class="nav-label">([^<]+)</span>', nav, re.S)
         self.assertEqual(len(links), len(spend.SECTIONS))
         for sid, label in links:
+            hero = re.search(r'<header[^>]* id="{}"[^>]* aria-label="([^"]+)"'.format(re.escape(sid)), self.page)
+            if hero:   # the overview panel has no heading; its aria-label names it
+                self.assertEqual(html.unescape(hero.group(1)), html.unescape(label))
+                continue
             m = re.search(r'<(?:section|header)[^>]* id="{}"[^>]*>.*?<h([12])[^>]*>(.*?)</h\1>'.format(re.escape(sid)),
                           self.page, re.S)
             self.assertIsNotNone(m, sid)

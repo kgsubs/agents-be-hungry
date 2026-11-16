@@ -1587,8 +1587,8 @@ def render_html(s, refresh=False, warning=None):
     p.append('<main class="page" id="main"><div class="content">')
 
     # hero
-    p.append('<header id="overview" class="hero" aria-labelledby="page-title"><div class="hero-grid"><div>'
-             '<h1 id="page-title">Spend overview</h1><p class="date">{}</p><p class="intro">{}</p></div>'
+    p.append('<header id="overview" class="hero" aria-label="Overview"><div class="hero-grid"><div>'
+             '<p class="date">{}</p><p class="intro">{}</p></div>'
              '<div class="hero-metric"><div class="value">{}</div><span class="label">Estimated cost at API prices</span></div></div>'
              '<div class="stats">'.format(esc(day_name(target)), esc(PAGE_ESTIMATE_LINE), money(s["total"])))
 
