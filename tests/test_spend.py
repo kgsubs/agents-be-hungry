@@ -448,7 +448,7 @@ class SpendTests(unittest.TestCase):
         self.fx.write("proj/s.jsonl", [user("secret prompt"), line("m1", "r1", inp=1000)])
         _, s = run_summary(self.fx.root)
         page = spend.render_html(s)
-        for needle in ("Don&#x27;t share it as is", "Cost by type", "Tokens by type", "Cost by model",
+        for needle in ("Nothing here leaves this computer unless you publish it.", "Cost by type", "Tokens by type", "Cost by model",
                        "Biggest sessions", "Biggest subagents", "Cost by day", "The last 7 days", "Cost by hour",
                        "The math be mathing.", "This is an estimate at API prices", "secret prompt"):
             self.assertIn(needle, page)
@@ -641,57 +641,78 @@ class SpendTests(unittest.TestCase):
             os.utime(p, (t, t))
         return p
 
-    def avg(self, ndays=7, history=30):
-        day_ = date.today()
+    def avg(self, ndays=7, history=31, now=None, day_=None):
+        day_ = day_ or date.today()
         data = spend.scan(self.fx.root, day_ - timedelta(days=ndays - 1), day_, PRICES, history_days=history)
-        return data, spend.summarize(data, day_, ndays)
+        return data, spend.summarize(data, day_, ndays, now=now)
 
     def hero_stats(self, s):
         hero = re.search(r"<header.*?</header>", spend.render_html(s), re.S).group(0)
-        return re.findall(r'<div class="stat" title="([^"]*)"><span>([^<]*)</span><b>([^<]*)</b>', hero)
+        return [tuple(html.unescape(x) for x in t) for t in
+                re.findall(r'<div class="stat" title="([^"]*)"><span>([^<]*)</span><b>([^<]*)</b>', hero)]
 
     def test_average_fewer_than_30_days_is_not_yet(self):
         self.write_days([0, 1, 12, 20])
         _, s = self.avg()
         a = s[spend.PAGE_AVG_KEY]
         self.assertIsNone(a["average"])
+        self.assertIsNone(a["by_now"])
         self.assertEqual(a["first_day"], (date.today() - timedelta(days=20)).isoformat())
-        stat = self.hero_stats(s)[1]
-        self.assertEqual(stat[1:], ("30-day average", "9 more days of data required"))
         first = date.today() - timedelta(days=20)
-        self.assertEqual(stat[0], "Not enough days of logs yet: they go back to {} {}.".format(first.strftime("%b"), first.day))
+        tip = "Not enough days of logs yet: they go back to {} {}.".format(first.strftime("%b"), first.day)
+        # the window starts 30 days back, so logs from 20 days back are 10 days short
+        self.assertEqual(self.hero_stats(s), [(tip, "vs. 30-day average by now", "10 more days of data required"),
+                                              (tip, "30-day daily average", "10 more days of data required")])
 
-    def test_average_exactly_30_days_counts_gap_days_as_zero(self):
-        self.write_days([0, 2, 29])                       # first day is the first day of the window
-        _, s = self.avg()
-        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 6.00 / 30, places=6)
-        self.assertEqual(self.hero_stats(s)[1], ("Average cost per day over the last 30 days.", "30-day average", "$0.20"))
-
-    def test_average_one_day_short_is_not_yet(self):
-        self.write_days([0, 28])
-        _, s = self.avg()
-        self.assertIsNone(s[spend.PAGE_AVG_KEY]["average"])
-        self.assertEqual(self.hero_stats(s)[1][2], "1 more day of data required")
-
-    def test_average_uses_only_the_last_30_days(self):
-        self.write_days([0, 1, 45, 31])                   # the two old days are outside the window
+    def test_average_exactly_30_days_back_counts_gap_days_as_zero(self):
+        self.write_days([0, 2, 30])                       # first day is the first day of the window
         _, s = self.avg()
         self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 4.00 / 30, places=6)
+        stat = self.hero_stats(s)[1]
+        self.assertEqual(stat[1:], ("30-day daily average", "$0.13"))
+        self.assertEqual(stat[0], "Average cost per day over the 30 days before {}.".format(spend.plain_md(date.today().isoformat())))
+
+    def test_window_excludes_the_shown_day(self):
+        self.write_days([0, 30])                          # today's $2 is not in the average
+        _, s = self.avg()
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 2.00 / 30, places=6)
+        self.write_days([1], name="t")
+        _, s = self.avg()
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 4.00 / 30, places=6)   # yesterday is in
+
+    def test_average_one_day_short_says_1_day(self):
+        self.write_days([0, 29])                          # window starts 30 days back
+        _, s = self.avg()
+        self.assertIsNone(s[spend.PAGE_AVG_KEY]["average"])
+        self.assertEqual(s[spend.PAGE_AVG_KEY]["needed"], 1)
+        for st in self.hero_stats(s):
+            self.assertEqual(st[2], "1 more day of data required")
+
+    def test_average_many_days_short_says_days(self):
+        self.write_days([0, 1])
+        _, s = self.avg()
+        self.assertEqual(s[spend.PAGE_AVG_KEY]["needed"], 29)
+        self.assertEqual([st[2] for st in self.hero_stats(s)], ["29 more days of data required"] * 2)
+
+    def test_average_uses_only_the_30_days_before(self):
+        self.write_days([0, 1, 45, 31])                   # the two old days are outside the window
+        _, s = self.avg()
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 2.00 / 30, places=6)
         self.assertEqual(s[spend.PAGE_AVG_KEY]["first_day"], (date.today() - timedelta(days=45)).isoformat())
 
     def test_average_includes_background_calls(self):
-        yday = self.days_ago(29)
-        self.fx.write("proj/c.jsonl", [line("m1", "r1", ts=yday, inp=1_000_000),
+        far = self.days_ago(30)
+        self.fx.write("proj/c.jsonl", [line("m1", "r1", ts=far, inp=1_000_000),
                                        cost_state(5.00, {"claude-sonnet-5-5": 5.00})])
         self.write_days([0], name="o")
         _, s = self.avg()
-        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], (5.00 + 2.00) / 30, places=6)
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 5.00 / 30, places=6)
 
     def test_average_unaffected_by_7_day_window(self):
-        self.write_days([0, 29])
+        self.write_days([0, 30])
         for nd in (1, 7, 14):
             _, s = self.avg(ndays=nd)
-            self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 4.00 / 30, places=6)
+            self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 2.00 / 30, places=6)
 
     def test_average_with_no_usage(self):
         self.fx.write("proj/s.jsonl", [user("hi")])
@@ -699,6 +720,88 @@ class SpendTests(unittest.TestCase):
         self.assertIsNone(s[spend.PAGE_AVG_KEY]["average"])
         self.assertEqual(self.hero_stats(s)[1][2], "30 more days of data required")
         self.assertEqual(self.hero_stats(s)[1][0], "Not enough days of logs yet.")
+
+    def by_now_fixture(self):
+        """Window days 1..30 back; a response at 09:00 ($2), 14:00 ($4) and 14:01 ($8) on day 1 and
+        on day 30 only a 09:00 one; today has $2 at 10:00 plus $2 of background calls."""
+        lines = [line("a1", "ra1", ts=self.days_ago(1, 9), inp=1_000_000),
+                 line("a2", "ra2", ts=self.days_ago(1, 14), inp=2_000_000),
+                 line("a3", "ra3", ts=today_at(14, 1) - timedelta(days=1), inp=4_000_000),
+                 line("a4", "ra4", ts=self.days_ago(30, 9), inp=1_000_000),
+                 line("a5", "ra5", ts=today_at(10), inp=1_000_000),
+                 cost_state(4.00, {"claude-sonnet-5-5": 4.00})]
+        self.fx.write("proj/n.jsonl", lines)
+
+    def test_by_now_average_cuts_each_day_at_the_same_time_of_day(self):
+        self.by_now_fixture()
+        _, s = self.avg(now=today_at(14, 0).timestamp())
+        a = s[spend.PAGE_AVG_KEY]
+        # day 1: 2 + 4 (14:00 counts, 14:01 does not); day 30: 2
+        self.assertAlmostEqual(a["by_now"], (2.00 + 4.00 + 2.00) / 30, places=6)
+        self.assertEqual(a["by_time"], "2:00 pm")
+        _, s = self.avg(now=today_at(14, 1).timestamp())
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["by_now"], (2.00 + 4.00 + 8.00 + 2.00) / 30, places=6)
+        _, s = self.avg(now=today_at(8, 59).timestamp())
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["by_now"], 0.0, places=6)
+
+    def test_by_now_leaves_out_background_calls_and_full_average_keeps_them(self):
+        self.fx.write("proj/n.jsonl", [line("a1", "ra1", ts=self.days_ago(1, 9), inp=1_000_000),
+                                       cost_state(7.00, {"claude-sonnet-5-5": 7.00}),
+                                       line("a2", "ra2", ts=self.days_ago(30, 9), inp=1_000_000),
+                                       line("a5", "ra5", ts=today_at(10), inp=1_000_000)])
+        _, s = self.avg(now=today_at(12).timestamp())
+        a = s[spend.PAGE_AVG_KEY]
+        self.assertAlmostEqual(a["by_now"], 4.00 / 30, places=6)        # logged only
+        self.assertAlmostEqual(a["average"], (4.00 + 3.00) / 30, places=6)  # the tally is $7 against $4 logged: a $3 gap
+        self.assertAlmostEqual(a["target_logged"], 2.00, places=6)
+
+    def test_today_stat_wording_and_tooltip(self):
+        self.by_now_fixture()
+        _, s = self.avg(now=today_at(14, 45).timestamp())
+        a = s[spend.PAGE_AVG_KEY]
+        s1, s2 = self.hero_stats(s)
+        self.assertEqual(s1[1], "vs. 30-day average by now")
+        by = (2.00 + 4.00 + 8.00 + 2.00) / 30
+        self.assertEqual(s1[2], "{} less".format(spend.money(by - 2.00)) if by > 2.00 else "{} more".format(spend.money(2.00 - by)))
+        self.assertEqual(s1[0], "Today so far: $2.00. Average by 2:45 pm over the last 30 days: {}. Background calls are left out "
+                                "of both, because they're only known when a session closes.".format(spend.money(by)))
+        self.assertEqual(s2[1:], ("30-day daily average", spend.money(a["average"])))
+        self.assertEqual(s2[0], "Average cost per day over the 30 days before {}.".format(
+            spend.plain_md(date.today().isoformat())))
+
+    def test_today_stat_more_and_same(self):
+        self.write_days([30])
+        self.fx.write("proj/t.jsonl", [line("t1", "rt1", ts=today_at(0, 0), inp=5_000_000)])
+        _, s = self.avg(now=today_at(1).timestamp())
+        self.assertEqual(self.hero_stats(s)[0][2], "$10.00 more")         # $10 so far against $0 by now
+
+    def test_today_stat_same(self):
+        self.write_days([30])
+        self.fx.write("proj/t.jsonl", [line("t1", "rt1", ts=today_at(0, 0), inp=1_000_000)])
+        self.fx.write("proj/y.jsonl", [line("y1", "ry1", ts=today_at(0, 0) - timedelta(days=1), inp=30_000_000)])
+        _, s = self.avg(now=today_at(1).timestamp())
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["by_now"], 2.00, places=6)   # $60 over 30 days
+        self.assertEqual(self.hero_stats(s)[0][2], "Same")
+
+    def test_past_day_mode(self):
+        self.fx.write("proj/p.jsonl", [line("p1", "rp1", ts=self.days_ago(2, 10), inp=3_000_000),
+                                       cost_state(8.00, {"claude-sonnet-5-5": 8.00})])
+        self.fx.write("proj/q.jsonl", [line("p2", "rp2", ts=self.days_ago(33, 10), inp=1_000_000),
+                                       line("p3", "rp3", ts=self.days_ago(3, 10), inp=1_000_000)])
+        day_ = date.today() - timedelta(days=2)
+        _, s = self.avg(day_=day_)
+        a = s[spend.PAGE_AVG_KEY]
+        # window: the 30 days before day_ (days 3..32 back); day_ itself and later are not in it
+        self.assertAlmostEqual(a["average"], 2.00 / 30, places=6)
+        s1, s2 = self.hero_stats(s)
+        self.assertEqual(s1[1], "vs. 30-day daily average")
+        self.assertEqual(s1[2], "{} more".format(spend.money(s["total"] - a["average"])))
+        self.assertAlmostEqual(s["total"], 8.00, places=6)                # background calls included in the day
+        self.assertEqual(s1[0], "This day's total: $8.00. Average cost per day over the 30 days before {}: {}. "
+                                "Background calls are included in both.".format(
+                                    spend.plain_md(day_.isoformat()), spend.money(a["average"])))
+        self.assertEqual(s2[1:], ("30-day daily average", spend.money(a["average"])))
+        self.assertEqual(s2[0], "Average cost per day over the 30 days before {}.".format(spend.plain_md(day_.isoformat())))
 
     def test_history_read_matches_a_full_read(self):
         """Sessions only the extra days need are read cheaply; every daily total comes out the same."""
@@ -710,9 +813,9 @@ class SpendTests(unittest.TestCase):
         t = (datetime.now() - timedelta(days=21)).timestamp()
         os.utime(Path(self.fx.root, "projects", "proj", "cl.jsonl"), (t, t))
         day_ = date.today()
-        light = spend.scan(self.fx.root, day_ - timedelta(days=6), day_, PRICES, history_days=30)
+        light = spend.scan(self.fx.root, day_ - timedelta(days=6), day_, PRICES, history_days=31)
         self.assertTrue(light["history"]["records"])          # the old sessions came through the cheap read
-        full = spend.scan(self.fx.root, day_ - timedelta(days=29), day_, PRICES)
+        full = spend.scan(self.fx.root, day_ - timedelta(days=30), day_, PRICES)
         for days in (30, 25, 8):
             a = spend.window_average(light, spend.tally_gaps(light), day_, days)
             b = spend.window_average(full, spend.tally_gaps(full), day_, days)
@@ -728,8 +831,8 @@ class SpendTests(unittest.TestCase):
         t = (datetime.now() - timedelta(days=12)).timestamp()
         os.utime(p, (t, t))
         data, _ = self.avg()
-        a = spend.window_average(data, spend.tally_gaps(data), date.today(), 13)
-        self.assertAlmostEqual(a["average"], 4.00 / 13, places=6)
+        a = spend.window_average(data, spend.tally_gaps(data), date.today(), 12)
+        self.assertAlmostEqual(a["average"], 2.00 / 12, places=6)
 
     def test_history_read_off_for_terminal_and_json(self):
         self.write_days([0, 3])
@@ -746,7 +849,7 @@ class SpendTests(unittest.TestCase):
                 mock.patch.object(spend, "scan", wraps=spend.scan) as sc:
             with contextlib.redirect_stdout(io.StringIO()):
                 spend.main(["--artifact"])
-        self.assertEqual(sc.call_args.kwargs["history_days"], 30)
+        self.assertEqual(sc.call_args.kwargs["history_days"], 31)
 
     def test_terminal_keeps_its_daily_average(self):
         self.write_days([0, 3])
@@ -761,10 +864,10 @@ class SpendTests(unittest.TestCase):
         _, s = self.avg()
         page = spend.render_html(s)
         stats = self.hero_stats(s)
-        self.assertEqual([x[1] for x in stats], ["vs. yesterday", "30-day average"])
+        self.assertEqual([x[1] for x in stats], ["vs. 30-day average by now", "30-day daily average"])
         self.assertNotIn("<span>Updated</span>", page)
         stamp = "Updated " + spend.when(s["generated"], "")
-        self.assertIn('Claude Code Spend<span title="When this page was made.">{}</span></a>'.format(stamp), page)
+        self.assertIn('Claude Code Spend<span title="When this page was made.">{}</span><span>{}</span></a>'.format(stamp, spend.LOCAL_LINE), page)
         self.assertIn('<span class="mobile-updated" title="When this page was made.">{}</span>'.format(stamp), page)
         self.assertEqual(page.count(stamp), 2)                # sidebar and top bar, not the stats
         css = spend._asset("page.css")
@@ -792,7 +895,7 @@ EVIL_AGENT = 'EVIL "NAME" <img src=x onerror=alert(1)> [opus]'
 EVIL_PROMPT = "<script>alert(1)</script> & more"
 EVIL_PROJECT = "-home-<x>"
 # Built from reversed pieces so this file does not contain the words it checks for.
-FORBIDDEN = re.compile("|".join(["adwogiek"[::-1], r"\b" + "iek"[::-1] + r"\b", "adwog"[::-1]]), re.I)
+FORBIDDEN = re.compile(r"\b" + "adwog"[::-1] + r"\b", re.I)
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -852,6 +955,25 @@ class PageTests(unittest.TestCase):
 
     def test_sidebar_brand(self):
         self.assertIn('<a class="brand" href="#overview">Claude Code Spend<span title="When this page was made.">Updated ', self.page)
+
+    def test_no_overview_nav_and_icon_only_menu_button(self):
+        nav = re.search(r'<nav class="journey-nav".*?</nav>', self.page, re.S).group(0)
+        self.assertNotIn("Overview", nav)
+        self.assertNotIn('href="#overview"', nav)
+        self.assertNotIn('class="mobile-location"', self.page)
+        self.assertIn('<button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" '
+                      'aria-controls="journey-nav"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'
+                      '<use href="#i-menu"/></svg></button>', self.page)
+        text = re.sub(r"<(style|script)\b.*?</\1>", "", self.page, flags=re.S)
+        text = re.sub(r"<[^>]+>", " ", text)
+        self.assertNotIn("Overview", text)
+        self.assertNotIn("Sections", text)
+
+    def test_footer_credit_and_no_sharing_note(self):
+        self.assertIn('<footer class="page-footer"><span>Made with &#x2764;&#xFE0F; by '
+                      '<a href="https://keigowda.com" target="_blank" rel="noopener">Kei</a></span>'
+                      '<a href="#overview">Back to top</a></footer>', self.page)
+        self.assertNotIn('class="privacy"', self.page)
 
     def test_journey_links_point_at_unique_sections(self):
         nav = re.search(r'<nav class="journey-nav".*?</nav>', self.page, re.S).group(0)

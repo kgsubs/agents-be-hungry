@@ -11,12 +11,14 @@
   function closeMenu() {
     sidebar.classList.remove('open');
     menu.setAttribute('aria-expanded', 'false');
-    menu.innerHTML = icon('menu') + '<span>Sections</span>';
+    menu.innerHTML = icon('menu');
+    menu.setAttribute('aria-label', 'Open menu');
   }
   menu.addEventListener('click', () => {
     const open = sidebar.classList.toggle('open');
     menu.setAttribute('aria-expanded', String(open));
-    menu.innerHTML = icon(open ? 'close' : 'menu') + '<span>' + (open ? 'Close' : 'Sections') + '</span>';
+    menu.innerHTML = icon(open ? 'close' : 'menu');
+    menu.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
   });
   links.forEach(link => link.addEventListener('click', closeMenu));
   document.addEventListener('keydown', event => {

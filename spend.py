@@ -29,6 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 ESTIMATE_LINE = ("This is an estimate at API prices. On a Pro or Max plan, you don't pay this; "
                  "it's what the same work would cost on the API.")
+LOCAL_LINE = "Nothing here leaves this computer unless you publish it."
 PRIVACY_LINE = ("This page shows your messages, subagent names and project folders. "
                 "Don't share it as is.")
 HIDDEN_LINE = ("Hidden background calls: Claude Code also works behind the scenes (shrinking long chats, "
@@ -903,21 +904,40 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
 
 
 
-def window_average(data, gaps, target, days=AVG_DAYS):
-    """The page's average cost per day over the `days` days ending on target, background calls
-    included, zero days counted. It is None (the page says how many more days it needs) unless the logs reach back to the first
-    day of that window: the first day with logged usage must be on or before it."""
+def window_average(data, gaps, target, days=AVG_DAYS, now=None):
+    """The page's 30-day comparison figures. The window is the `days` full days before target
+    (target itself is not in it). `average` is the cost per day over those days, background calls
+    included, zero days counted. `by_now` is the average over the same days of each day's logged
+    cost from midnight up to the local time of day of `now` (a datetime), background calls left out
+    because they are only known when a session closes; None when now is not given.
+    `target_logged` is target's own logged cost. Both averages are None (the page says how many more
+    days it needs) unless the logs reach back to the first day of the window: the first day with
+    logged usage must be on or before it."""
     hist = data.get("history")
     recs = data["records"] + (hist["records"] if hist else [])
+    start = target - timedelta(days=days)
+    cut = None if now is None else now.hour * 3600 + now.minute * 60 + now.second + now.microsecond / 1e6
     logged = defaultdict(float)
+    by_now = 0.0
+    target_logged = 0.0
     first = None
     for r in recs:
-        if r["day"] > target:
+        d = r["day"]
+        if d > target:
             continue
-        if first is None or r["day"] < first:
-            first = r["day"]
-        if r["cost"] is not None:
-            logged[r["day"]] += r["cost"]
+        if first is None or d < first:
+            first = d
+        c = r["cost"]
+        if c is None:
+            continue
+        if d == target:
+            target_logged += c
+        elif d >= start:
+            logged[d] += c
+            if cut is not None:
+                t = r["ts"]
+                if t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6 <= cut:
+                    by_now += c
     hidden = defaultdict(float)
     for (d, _m), v in gaps["day_model"].items():
         hidden[d] += v
@@ -925,12 +945,13 @@ def window_average(data, gaps, target, days=AVG_DAYS):
         hg = tally_gaps({"records": hist["records"], "snapshots": hist["snapshots"]})
         for (d, _m), v in hg["day_model"].items():
             hidden[d] += v
-    start = target - timedelta(days=days - 1)
     value = None
     if first is not None and first <= start:
         value = sum(logged[start + timedelta(days=i)] + hidden[start + timedelta(days=i)] for i in range(days)) / days
     needed = 0 if value is not None else ((first - start).days if first is not None else days)
-    return {"days": days, "average": value, "first_day": first.isoformat() if first else None, "needed": needed}
+    return {"days": days, "average": value, "first_day": first.isoformat() if first else None, "needed": needed,
+            "by_now": (by_now / days) if (value is not None and cut is not None) else None,
+            "target_logged": target_logged, "by_time": clock(now) if now is not None else None}
 
 
 def summarize(data, target, ndays=7, now=None):
@@ -1152,7 +1173,7 @@ def summarize(data, target, ndays=7, now=None):
         # the same TLDR in the page's words; render_html uses it, --json leaves it out
         PAGE_TLDR_KEY: build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality,
                                   day_word, TLDR_PAGE),
-        PAGE_AVG_KEY: window_average(data, gaps, target),
+        PAGE_AVG_KEY: window_average(data, gaps, target, now=datetime.fromtimestamp(now)),
     }
 
 
@@ -1560,7 +1581,7 @@ def page_counted_rows(q):
 # links to, shortened only where the heading is long; the order is the page order.
 # The page is one document, so the CSS and the navigation script are inlined from
 # page.css and page.js.
-SECTIONS = (("overview", "Overview", "compass"), ("tldr", "TLDR", "check"),
+SECTIONS = (("tldr", "TLDR", "check"),
             ("cost-by-type", "Cost by type", "file"), ("cost-by-model", "Cost by model", "grid"),
             ("biggest-sessions", "Biggest sessions", "clients"), ("biggest-subagents", "Biggest subagents", "branch"),
             ("cost-by-day", "Cost by day", "calendar"), ("cost-by-hour", "Cost by hour", "clock"),
@@ -1703,7 +1724,6 @@ def render_html(s, refresh=False, warning=None):
     q = s["quality"]
     series = s["chart_series"]
     target = s["date"]
-    vs = vs_word(s)
     p = ['<!doctype html>\n<html lang="en"><head><meta charset="utf-8">',
          '<meta name="viewport" content="width=device-width,initial-scale=1">',
          '<meta name="color-scheme" content="light">']
@@ -1716,11 +1736,11 @@ def render_html(s, refresh=False, warning=None):
     # sidebar: brand, the Sections button for phones, and one link per section
     updated = "Updated " + when(s["generated"], "")
     p.append('<aside class="sidebar" aria-label="Page navigation"><a class="brand" href="#overview">{}'
-             '<span title="When this page was made.">{}</span></a>'.format(esc(PAGE_TITLE), esc(updated)))
-    p.append('<button class="menu-toggle" type="button" aria-expanded="false" aria-controls="journey-nav">'
-             '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-menu"/></svg><span>Sections</span></button>')
-    p.append('<span class="mobile-location">{}</span>'.format(esc(SECTIONS[0][1])))
+             '<span title="When this page was made.">{}</span><span>{}</span></a>'.format(esc(PAGE_TITLE), esc(updated), esc(LOCAL_LINE)))
+    p.append('<button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="journey-nav">'
+             '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-menu"/></svg></button>')
     p.append('<span class="mobile-updated" title="When this page was made.">{}</span>'.format(esc(updated)))
+    p.append('<span class="mobile-updated">{}</span>'.format(esc(LOCAL_LINE)))
     p.append('<nav class="journey-nav" id="journey-nav" aria-label="Page sections">{}</nav></aside>'.format("".join(
         '<a class="journey-link" href="#{}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-{}"/></svg>'
         '<span class="nav-label">{}</span><span class="location-dot"></span></a>'.format(sid, icon, esc(label))
@@ -1735,17 +1755,33 @@ def render_html(s, refresh=False, warning=None):
 
     def stat(label, value, tip):
         p.append('<div class="stat" title="{}"><span>{}</span><b>{}</b></div>'.format(esc(tip), esc(label), esc(value)))
-    stat("vs. " + vs, change_text(s["change"], vs).replace(" than " + vs, "").replace("Same as " + vs, "Same"),
-         "{}: {}.".format(vs[:1].upper() + vs[1:], money(s["yesterday"])))
     a = s[PAGE_AVG_KEY]
+    nd = a["days"]
+    is_today = target == date.today().isoformat()
+    label1 = "vs. {}-day average by now".format(nd) if is_today else "vs. {}-day daily average".format(nd)
+    label2 = "{}-day daily average".format(nd)
+
+    def more_less(x):
+        return "Same" if abs(x) < 0.005 else "{} {}".format(money(abs(x)), "more" if x > 0 else "less")
     if a["average"] is not None:
-        stat("{}-day average".format(a["days"]), money(a["average"]),
-             "Average cost per day over the last {} days.".format(a["days"]))
+        if is_today:
+            stat(label1, more_less(a["target_logged"] - a["by_now"]),
+                 "Today so far: {}. Average by {} over the last {} days: {}. Background calls are left out of both, "
+                 "because they're only known when a session closes.".format(
+                     money(a["target_logged"]), a["by_time"], nd, money(a["by_now"])))
+        else:
+            stat(label1, more_less(s["total"] - a["average"]),
+                 "This day's total: {}. Average cost per day over the {} days before {}: {}. "
+                 "Background calls are included in both.".format(
+                     money(s["total"]), nd, plain_md(target), money(a["average"])))
+        stat(label2, money(a["average"]),
+             "Average cost per day over the {} days before {}.".format(nd, plain_md(target)))
     else:
-        stat("{}-day average".format(a["days"]),
-             "{} more {} of data required".format(a["needed"], "day" if a["needed"] == 1 else "days"),
-             "Not enough days of logs yet: they go back to {}.".format(plain_md(a["first_day"])) if a["first_day"]
-             else "Not enough days of logs yet.")
+        value = "{} more {} of data required".format(a["needed"], "day" if a["needed"] == 1 else "days")
+        tip = ("Not enough days of logs yet: they go back to {}.".format(plain_md(a["first_day"])) if a["first_day"]
+               else "Not enough days of logs yet.")
+        stat(label1, value, tip)
+        stat(label2, value, tip)
     p.append('</div></header>')
     if warning:
         p.append('<p class="note warn">Warning: {}</p>'.format(esc(warning)))
@@ -1964,9 +2000,8 @@ def render_html(s, refresh=False, warning=None):
     p.append('</dl></article>')
 
     # sharing note
-    p.append('<aside class="privacy" aria-label="Sharing note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'
-             '<use href="#i-file"/></svg><p>Nothing here leaves this computer unless you publish it. {}</p></aside></section>'.format(esc(PRIVACY_LINE)))
-    p.append('<footer class="page-footer"><span>{}</span><a href="#overview">Back to top</a></footer>'.format(esc(PAGE_TITLE)))
+    p.append('</section>')
+    p.append('<footer class="page-footer"><span>Made with &#x2764;&#xFE0F; by <a href="https://keigowda.com" target="_blank" rel="noopener">Kei</a></span><a href="#overview">Back to top</a></footer>')
     p.append("</div></main><script>\n{}</script></body></html>".format(_asset("page.js")))
     return "".join(p)
 
@@ -2001,7 +2036,7 @@ def run_once(args, prices, target, root):
     first = target - timedelta(days=max(args.days, 1) - 1)
     # only a page shows the 30-day average, so only a page reads the extra days
     page = (args.html or args.artifact or args.watch) and not args.json
-    data = scan(root, first, target, prices, history_days=AVG_DAYS if page else 0)
+    data = scan(root, first, target, prices, history_days=AVG_DAYS + 1 if page else 0)
     return summarize(data, target, args.days)
 
 
