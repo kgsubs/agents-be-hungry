@@ -1383,7 +1383,7 @@ def page_why_text(why):
 
 
 def page_counted_rows(q):
-    """(label, value, tooltip) rows for the page's 'How it's counted'. Same facts as counted_rows, page words."""
+    """(label, value, tooltip) rows for the page's 'The math be mathing.' Same facts as counted_rows, page words."""
     rows = [
         ("Log files read", num(q["files_read"]),
          "Claude Code's saved session files that were read for this page."),
@@ -1424,8 +1424,9 @@ def page_counted_rows(q):
 # page.css and page.js.
 SECTIONS = (("overview", "Overview", "compass"), ("tldr", "TLDR", "check"),
             ("cost-by-type", "Cost by type", "file"), ("cost-by-model", "Cost by model", "grid"),
-            ("biggest-sessions", "Biggest sessions", "clients"), ("cost-by-day", "Cost by day", "clock"),
-            ("how-its-counted", "How it's counted", "book"))
+            ("biggest-sessions", "Biggest sessions", "clients"), ("biggest-subagents", "Biggest subagents", "branch"),
+            ("cost-by-day", "Cost by day", "calendar"), ("cost-by-hour", "Cost by hour", "clock"),
+            ("the-math-be-mathing", "The math be mathing", "book"))
 SPRITE = (
     '<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>'
     '<symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m16 8-3 5-5 3 3-5z"/></symbol>'
@@ -1435,6 +1436,8 @@ SPRITE = (
     '<symbol id="i-book" viewBox="0 0 24 24"><path d="M12 5c-3-2-6-2-10-1v15c4-1 7-1 10 1 3-2 6-2 10-1V4c-4-1-7-1-10 1zm0 0v15"/></symbol>'
     '<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>'
     '<symbol id="i-clients" viewBox="0 0 24 24"><circle cx="8" cy="7" r="3"/><path d="M2 20v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14c3 1 4 3 4 6"/></symbol>'
+    '<symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 7v10M8 12h8"/></symbol>'
+    '<symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="1"/><path d="M3 10h18M8 3v4M16 3v4"/></symbol>'
     '<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></symbol>'
     '<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>'
     '<symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>'
@@ -1736,8 +1739,9 @@ def render_html(s, refresh=False, warning=None):
 
     # biggest subagents
     shown = min(len(s["subagents"]), TOP_SUBAGENTS)
-    p.append('<article class="block"><h3 title="Subagents are extra agents a session starts to take on part of the work.">'
-             'Biggest subagents</h3><p class="lead">Extra agents a session starts to take on part of the work. Costliest first, '
+    p.append('</section><section class="section" id="biggest-subagents"><article class="block">'
+             '<h2 title="Subagents are extra agents a session starts to take on part of the work.">'
+             'Biggest subagents</h2><p class="lead">Extra agents a session starts to take on part of the work. Costliest first, '
              'across all sessions, priced by the model that did the work. Showing {}.</p>'.format(
                  plural(shown, "subagent") if shown == len(s["subagents"]) else "{} of {}".format(shown, plural(len(s["subagents"]), "subagent"))))
     p.append('{}<thead><tr>{}</tr></thead><tbody>'.format(_table_open("Biggest subagents table", "wide-table"), "".join([
@@ -1797,7 +1801,7 @@ def render_html(s, refresh=False, warning=None):
     # cost by hour
     hstacks = [_stack(h["by_model"], series) for h in s["hours"]]
     has_other = any(c == "s4" for st in hstacks for c, _, _ in st)
-    p.append('<article class="block"><h3>Cost by hour</h3><p class="lead">Your local time. Hover a bar to see each model\'s cost. '
+    p.append('</section><section class="section" id="cost-by-hour"><article class="block"><h2>Cost by hour</h2><p class="lead">Your local time. Hover a bar to see each model\'s cost. '
              'Background calls aren\'t tied to an hour, so they aren\'t here.</p>{}{}{}</div></article></section>'.format(
         legend(series, has_other), _chart_open("Cost by hour chart"),
         stacked_chart([hour_name(h["hour"]).replace(" am", "a").replace(" pm", "p") for h in s["hours"]], hstacks,
@@ -1805,7 +1809,7 @@ def render_html(s, refresh=False, warning=None):
                       pid="hatch-hour", title="Cost by hour, split by model")))
 
     # how it's counted
-    p.append('<section class="section" id="how-its-counted"><article class="block"><h2>How it\'s counted</h2>'
+    p.append('<section class="section" id="the-math-be-mathing"><article class="block"><h2>The math be mathing.</h2>'
              '<p class="lead">What was read on this day, and what couldn\'t be counted.</p><dl>')
     for k, v, tip in page_counted_rows(q):
         p.append('<div class="kv"><dt title="{}">{}</dt><dd>{}</dd></div>'.format(esc(tip), esc(k), esc(v)))

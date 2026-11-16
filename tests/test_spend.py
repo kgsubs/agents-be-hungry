@@ -450,7 +450,7 @@ class SpendTests(unittest.TestCase):
         page = spend.render_html(s)
         for needle in ("Don&#x27;t share it as is", "Cost by type", "Tokens by type", "Cost by model",
                        "Biggest sessions", "Biggest subagents", "Cost by day", "The last 7 days", "Cost by hour",
-                       "How it&#x27;s counted", "This is an estimate at API prices", "secret prompt"):
+                       "The math be mathing.", "This is an estimate at API prices", "secret prompt"):
             self.assertIn(needle, page)
         self.assertNotIn("Cost by project", page)
         self.assertEqual(page.count("serif"), page.count("sans-serif"))   # no serif font anywhere
