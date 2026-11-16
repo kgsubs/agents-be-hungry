@@ -1985,7 +1985,7 @@ def render_html(s, refresh=False, warning=None):
     # cost by hour
     hstacks = [_stack(h["by_model"], series) for h in s["hours"]]
     has_other = any(c == "s4" for st in hstacks for c, _, _ in st)
-    p.append('</section><section class="section" id="cost-by-hour"><article class="block"><h2>Cost by hour</h2><p class="lead">Your local time. Hover a bar to see each model\'s cost. '
+    p.append('</section><section class="section" id="cost-by-hour"><article class="block"><h2>Cost by hour</h2><p class="lead">Your local time. '
              'Background calls aren\'t tied to an hour, so they aren\'t here.</p>{}{}{}</div></article></section>'.format(
         legend(series, has_other), _chart_open("Cost by hour chart"),
         stacked_chart([hour_name(h["hour"]).replace(" am", "a").replace(" pm", "p") for h in s["hours"]], hstacks,
