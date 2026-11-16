@@ -626,6 +626,161 @@ class SpendTests(unittest.TestCase):
                 spend.main(argv)
             self.assertNotEqual(cm.exception.code, 0)
 
+    # ---- 30-day average on the page
+
+    def days_ago(self, n, h=12):
+        return today_at(h) - timedelta(days=n)
+
+    def write_days(self, offsets, name="s", old=False):
+        """One session with a $2.00 response (1M sonnet input) on each day offset."""
+        lines = [line("{}m{}".format(name, n), "{}r{}".format(name, n), ts=self.days_ago(n), inp=1_000_000)
+                 for n in offsets]
+        p = self.fx.write("proj/{}.jsonl".format(name), lines)
+        if old:
+            t = (datetime.now() - timedelta(days=min(offsets))).timestamp()
+            os.utime(p, (t, t))
+        return p
+
+    def avg(self, ndays=7, history=30):
+        day_ = date.today()
+        data = spend.scan(self.fx.root, day_ - timedelta(days=ndays - 1), day_, PRICES, history_days=history)
+        return data, spend.summarize(data, day_, ndays)
+
+    def hero_stats(self, s):
+        hero = re.search(r"<header.*?</header>", spend.render_html(s), re.S).group(0)
+        return re.findall(r'<div class="stat" title="([^"]*)"><span>([^<]*)</span><b>([^<]*)</b>', hero)
+
+    def test_average_fewer_than_30_days_is_not_yet(self):
+        self.write_days([0, 1, 12, 20])
+        _, s = self.avg()
+        a = s[spend.PAGE_AVG_KEY]
+        self.assertIsNone(a["average"])
+        self.assertEqual(a["first_day"], (date.today() - timedelta(days=20)).isoformat())
+        stat = self.hero_stats(s)[1]
+        self.assertEqual(stat[1:], ("30-day average", "not yet"))
+        first = date.today() - timedelta(days=20)
+        self.assertEqual(stat[0], "Not enough days of logs yet: they go back to {} {}.".format(first.strftime("%b"), first.day))
+
+    def test_average_exactly_30_days_counts_gap_days_as_zero(self):
+        self.write_days([0, 2, 29])                       # first day is the first day of the window
+        _, s = self.avg()
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 6.00 / 30, places=6)
+        self.assertEqual(self.hero_stats(s)[1], ("Average cost per day over the last 30 days.", "30-day average", "$0.20"))
+
+    def test_average_one_day_short_is_not_yet(self):
+        self.write_days([0, 28])
+        _, s = self.avg()
+        self.assertIsNone(s[spend.PAGE_AVG_KEY]["average"])
+
+    def test_average_uses_only_the_last_30_days(self):
+        self.write_days([0, 1, 45, 31])                   # the two old days are outside the window
+        _, s = self.avg()
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 4.00 / 30, places=6)
+        self.assertEqual(s[spend.PAGE_AVG_KEY]["first_day"], (date.today() - timedelta(days=45)).isoformat())
+
+    def test_average_includes_background_calls(self):
+        yday = self.days_ago(29)
+        self.fx.write("proj/c.jsonl", [line("m1", "r1", ts=yday, inp=1_000_000),
+                                       cost_state(5.00, {"claude-sonnet-5-5": 5.00})])
+        self.write_days([0], name="o")
+        _, s = self.avg()
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], (5.00 + 2.00) / 30, places=6)
+
+    def test_average_unaffected_by_7_day_window(self):
+        self.write_days([0, 29])
+        for nd in (1, 7, 14):
+            _, s = self.avg(ndays=nd)
+            self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 4.00 / 30, places=6)
+
+    def test_average_with_no_usage(self):
+        self.fx.write("proj/s.jsonl", [user("hi")])
+        _, s = self.avg()
+        self.assertIsNone(s[spend.PAGE_AVG_KEY]["average"])
+        self.assertEqual(self.hero_stats(s)[1][2], "not yet")
+        self.assertEqual(self.hero_stats(s)[1][0], "Not enough days of logs yet.")
+
+    def test_history_read_matches_a_full_read(self):
+        """Sessions only the extra days need are read cheaply; every daily total comes out the same."""
+        self.write_days([0, 1], name="new")
+        self.write_days([14, 20, 29], name="old", old=True)
+        self.fx.write("proj/cl.jsonl", [line("c1", "q1", ts=self.days_ago(22), inp=1_000_000),
+                                        cost_state(7.00, {"claude-sonnet-5-5": 7.00}),
+                                        line("c2", "q2", ts=self.days_ago(21), inp=500_000)])
+        t = (datetime.now() - timedelta(days=21)).timestamp()
+        os.utime(Path(self.fx.root, "projects", "proj", "cl.jsonl"), (t, t))
+        day_ = date.today()
+        light = spend.scan(self.fx.root, day_ - timedelta(days=6), day_, PRICES, history_days=30)
+        self.assertTrue(light["history"]["records"])          # the old sessions came through the cheap read
+        full = spend.scan(self.fx.root, day_ - timedelta(days=29), day_, PRICES)
+        for days in (30, 25, 8):
+            a = spend.window_average(light, spend.tally_gaps(light), day_, days)
+            b = spend.window_average(full, spend.tally_gaps(full), day_, days)
+            self.assertEqual(a["first_day"], b["first_day"])
+            self.assertAlmostEqual(a["average"] or 0.0, b["average"] or 0.0, places=9)
+        a = spend.window_average(light, spend.tally_gaps(light), day_, 25)
+        self.assertGreater(a["average"], 0)
+
+    def test_history_read_counts_a_response_once(self):
+        l = line("dup", "r", ts=self.days_ago(12), inp=1_000_000)
+        self.fx.write("proj/a.jsonl", [line("m0", "r0", inp=1_000_000), l])
+        p = self.fx.write("proj/b.jsonl", [l])
+        t = (datetime.now() - timedelta(days=12)).timestamp()
+        os.utime(p, (t, t))
+        data, _ = self.avg()
+        a = spend.window_average(data, spend.tally_gaps(data), date.today(), 13)
+        self.assertAlmostEqual(a["average"], 4.00 / 13, places=6)
+
+    def test_history_read_off_for_terminal_and_json(self):
+        self.write_days([0, 3])
+        self.write_days([15], name="old", old=True)
+        for argv in ([], ["--json"]):
+            with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.fx.root}), \
+                    mock.patch.object(spend, "scan", wraps=spend.scan) as sc:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    spend.main(argv)
+            self.assertEqual(sc.call_args.kwargs.get("history_days", 0), 0)
+        art = os.path.join(self.fx.root, "a.html")
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.fx.root}), \
+                mock.patch.object(spend, "artifact_path", return_value=art), \
+                mock.patch.object(spend, "scan", wraps=spend.scan) as sc:
+            with contextlib.redirect_stdout(io.StringIO()):
+                spend.main(["--artifact"])
+        self.assertEqual(sc.call_args.kwargs["history_days"], 30)
+
+    def test_terminal_keeps_its_daily_average(self):
+        self.write_days([0, 3])
+        _, s = self.avg()
+        _, plain = run_summary(self.fx.root)
+        self.assertEqual(spend.render_text(s), spend.render_text(plain))
+        self.assertIn("Daily average (last 7 days) $0.57", spend.render_text(s))
+        self.assertEqual(spend.render_text(s).count("30-day"), 0)
+
+    def test_hero_stats_and_updated_in_header(self):
+        self.write_days([0, 1])
+        _, s = self.avg()
+        page = spend.render_html(s)
+        stats = self.hero_stats(s)
+        self.assertEqual([x[1] for x in stats], ["vs. yesterday", "30-day average"])
+        self.assertNotIn("<span>Updated</span>", page)
+        stamp = "Updated " + spend.when(s["generated"], "")
+        self.assertIn('Claude Code Spend<span title="When this page was made.">{}</span></a>'.format(stamp), page)
+        self.assertIn('<span class="mobile-updated" title="When this page was made.">{}</span>'.format(stamp), page)
+        self.assertEqual(page.count(stamp), 2)                # sidebar and top bar, not the stats
+        css = spend._asset("page.css")
+        narrow = css[css.index("@media(max-width:900px)"):css.index("@media(max-width:620px)")]
+        self.assertIn(".brand span{display:none}", narrow)           # the sidebar line hides here ...
+        self.assertIn(".mobile-updated{display:block", narrow)       # ... and the top bar line shows
+        self.assertRegex(css, r"\.mobile-updated\{display:block")
+        self.assertIn("repeat(auto-fit,minmax(150px,1fr))", css)
+
+    def test_json_leaves_out_the_page_average(self):
+        self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1000)])
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.fx.root}):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                spend.main(["--json"])
+        self.assertNotIn(spend.PAGE_AVG_KEY, json.loads(buf.getvalue()))
+
     def test_bracket_in_folder_name(self):
         self.fx.write("my [proj]/s.jsonl", [line("m1", "r1", inp=1_000_000)])
         _, s = run_summary(self.fx.root)
@@ -695,7 +850,7 @@ class PageTests(unittest.TestCase):
             self.assertIsNone(FORBIDDEN.search(p.read_text(encoding="utf-8", errors="replace")), p)
 
     def test_sidebar_brand(self):
-        self.assertIn('<a class="brand" href="#overview">Claude Code Spend</a>', self.page)
+        self.assertIn('<a class="brand" href="#overview">Claude Code Spend<span title="When this page was made.">Updated ', self.page)
 
     def test_journey_links_point_at_unique_sections(self):
         nav = re.search(r'<nav class="journey-nav".*?</nav>', self.page, re.S).group(0)

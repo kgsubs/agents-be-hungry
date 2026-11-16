@@ -100,6 +100,8 @@ PAGE_BACKGROUND_LINE = ("Background calls: Claude Code also makes calls on its o
                         "naming a session or running safety checks. It doesn't save them in its logs, so their cost "
                         "comes from Claude Code's own running total once a session closes. They're included in every total.")
 PAGE_TLDR_KEY = "page_tldr"
+PAGE_AVG_KEY = "page_average"   # the page's 30-day average; render_html uses it, --json leaves it out
+AVG_DAYS = 30
 PAGE_TOKEN_LINE = "Tokens are the small pieces of text Claude reads and writes. One token is about 3/4 of a word."
 
 
@@ -375,8 +377,104 @@ def read_meta(agent_path):
         return {}
 
 
-def scan(root, first_day, last_day, prices):
-    """Read transcripts once. Returns raw, deduplicated data for summarize()."""
+def scan_history(root, first_day, prices, skip, seen_a):
+    """Daily totals only, for the 30, 60 and 90 day averages.
+
+    Reads the sessions that scan() did not read (not in skip) and keeps only what a daily
+    total needs: each response's day and cost, and the tally lines. Lines that cannot be
+    one of those are skipped without parsing. Responses scan() already counted (seen_a)
+    are not counted twice. Returns {"records": [...], "snapshots": {session: [...]}}
+    in the shape tally_gaps() reads."""
+    start = datetime.combine(first_day, datetime.min.time()).astimezone()
+    sessions = session_files(root, start.timestamp() - 86400)
+    records = []
+    seen = {}               # (message.id, requestId) -> (usage signature, [record indexes])
+    snapshots = defaultdict(list)
+    for key in sorted(sessions):
+        if key in skip:
+            continue
+        v = sessions[key]
+        files = ([v["main"]] if v["main"] else []) + sorted(v["subs"])
+        for f in files:
+            is_sub = f != v["main"]
+            try:
+                fh = open(f, "rb", buffering=1 << 20)      # bytes: lines that are skipped are never decoded
+            except OSError:
+                continue
+            last_ts = None
+            pend = []       # lines skipped since the last line that gave a timestamp
+            with fh:
+                for line in _safe_lines(fh):
+                    if b'"usage"' not in line and b"cost-state" not in line:
+                        pend.append(line)
+                        continue
+                    try:
+                        o = json.loads(line.decode("utf-8", errors="replace"))
+                    except ValueError:
+                        continue
+                    if not isinstance(o, dict):
+                        continue
+                    ts = parse_ts(o.get("timestamp"))
+                    if ts is not None:
+                        last_ts = ts
+                        pend = []
+                    t = o.get("type")
+                    if t == "cost-state":
+                        if is_sub or not isinstance(o.get("totalCostUSD"), (int, float)):
+                            continue
+                        if ts is None:
+                            # the tally is dated by the last line before it that has a timestamp
+                            for ln in reversed(pend):
+                                try:
+                                    po = json.loads(ln.decode("utf-8", errors="replace"))
+                                except ValueError:
+                                    continue
+                                pts = parse_ts(po.get("timestamp")) if isinstance(po, dict) else None
+                                if pts is not None:
+                                    last_ts = pts
+                                    break
+                            pend = []
+                        snap_ts = last_ts
+                        if snap_ts is None and _n(o.get("startTime")):
+                            snap_ts = datetime.fromtimestamp((_n(o["startTime"]) + _n(o.get("totalDuration"))) / 1000).astimezone()
+                        mu = o.get("modelUsage") if isinstance(o.get("modelUsage"), dict) else {}
+                        snapshots[key].append({"ts": snap_ts, "total": float(o["totalCostUSD"]),
+                                               "models": {m: _n(u.get("costUSD")) for m, u in mu.items() if isinstance(u, dict)}})
+                        continue
+                    if t != "assistant" or ts is None:
+                        continue
+                    msg = o.get("message")
+                    if not isinstance(msg, dict) or not isinstance(msg.get("usage"), dict):
+                        continue
+                    usage = msg["usage"]
+                    mid, rid = msg.get("id"), o.get("requestId")
+                    k2 = (mid, rid) if mid else None
+                    if k2 is not None and k2 in seen_a:
+                        continue
+                    sig = json.dumps(usage, sort_keys=True)
+                    if k2 is not None and k2 in seen:
+                        old_sig, old_idx = seen[k2]
+                        if old_sig == sig:
+                            continue
+                        for i in old_idx:
+                            records[i]["dead"] = True
+                    new_idx = []
+                    for model, u in usage_pieces(o, msg):
+                        tok = usage_numbers(u)
+                        if sum(tok.values()) == 0:
+                            continue
+                        parts = cost_parts(prices, find_price(prices, model), tok, u)
+                        new_idx.append(len(records))
+                        records.append({"day": ts.date(), "ts": ts, "model": model, "session": key,
+                                        "cost": None if parts is None else sum(parts.values()), "dead": False})
+                    if k2 is not None:
+                        seen[k2] = (sig, new_idx)
+    return {"records": [r for r in records if not r["dead"]], "snapshots": dict(snapshots)}
+
+
+def scan(root, first_day, last_day, prices, history_days=0):
+    """Read transcripts once. Returns raw, deduplicated data for summarize().
+    history_days > days read: also read the older days, for daily totals only (scan_history)."""
     start_local = datetime.combine(first_day, datetime.min.time()).astimezone()
     sessions = session_files(root, start_local.timestamp() - 86400)
     records = []            # one per priced piece of a response; dead=True when replaced
@@ -519,10 +617,13 @@ def scan(root, first_day, last_day, prices):
     for r in requests.values():
         if r["ts"] is not None:
             req_by_day[r["ts"].date()] += 1
+    history = None
+    if history_days > (last_day - first_day).days + 1:
+        history = scan_history(root, last_day - timedelta(days=history_days - 1), prices, set(sessions), seen)
     return {"records": records, "meta": meta, "agents": agents, "lines_by_day": lines_by_day,
             "zero_by_day": zero_by_day, "unmatched": unmatched, "req_by_day": req_by_day,
             "compactions": compactions, "snapshots": dict(snapshots), "counts": dict(q),
-            "first_day": first_day, "last_day": last_day, "prices": prices}
+            "first_day": first_day, "last_day": last_day, "prices": prices, "history": history}
 
 
 # ---------------------------------------------------------------- tally gap
@@ -802,6 +903,35 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
 
 
 
+def window_average(data, gaps, target, days=AVG_DAYS):
+    """The page's average cost per day over the `days` days ending on target, background calls
+    included, zero days counted. It is None ("not yet") unless the logs reach back to the first
+    day of that window: the first day with logged usage must be on or before it."""
+    hist = data.get("history")
+    recs = data["records"] + (hist["records"] if hist else [])
+    logged = defaultdict(float)
+    first = None
+    for r in recs:
+        if r["day"] > target:
+            continue
+        if first is None or r["day"] < first:
+            first = r["day"]
+        if r["cost"] is not None:
+            logged[r["day"]] += r["cost"]
+    hidden = defaultdict(float)
+    for (d, _m), v in gaps["day_model"].items():
+        hidden[d] += v
+    if hist:
+        hg = tally_gaps({"records": hist["records"], "snapshots": hist["snapshots"]})
+        for (d, _m), v in hg["day_model"].items():
+            hidden[d] += v
+    start = target - timedelta(days=days - 1)
+    value = None
+    if first is not None and first <= start:
+        value = sum(logged[start + timedelta(days=i)] + hidden[start + timedelta(days=i)] for i in range(days)) / days
+    return {"days": days, "average": value, "first_day": first.isoformat() if first else None}
+
+
 def summarize(data, target, ndays=7, now=None):
     """Everything the terminal, the page and --json show, as plain JSON-ready data."""
     now = now or time.time()
@@ -1021,6 +1151,7 @@ def summarize(data, target, ndays=7, now=None):
         # the same TLDR in the page's words; render_html uses it, --json leaves it out
         PAGE_TLDR_KEY: build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, total, quality,
                                   day_word, TLDR_PAGE),
+        PAGE_AVG_KEY: window_average(data, gaps, target),
     }
 
 
@@ -1123,6 +1254,12 @@ def plain_date(iso):
     except ValueError:
         return str(iso)
     return "{} {}, {}".format(d.strftime("%b"), d.day, d.year)
+
+
+def plain_md(iso):
+    """'2026-10-20' -> 'Oct 20'."""
+    d = datetime.strptime(iso, "%Y-%m-%d")
+    return "{} {}".format(d.strftime("%b"), d.day)
 
 
 def ago(days):
@@ -1576,10 +1713,13 @@ def render_html(s, refresh=False, warning=None):
     p.append('<a class="skip" href="#main">Skip to content</a>')
 
     # sidebar: brand, the Sections button for phones, and one link per section
-    p.append('<aside class="sidebar" aria-label="Page navigation"><a class="brand" href="#overview">{}</a>'.format(esc(PAGE_TITLE)))
+    updated = "Updated " + when(s["generated"], "")
+    p.append('<aside class="sidebar" aria-label="Page navigation"><a class="brand" href="#overview">{}'
+             '<span title="When this page was made.">{}</span></a>'.format(esc(PAGE_TITLE), esc(updated)))
     p.append('<button class="menu-toggle" type="button" aria-expanded="false" aria-controls="journey-nav">'
              '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-menu"/></svg><span>Sections</span></button>')
     p.append('<span class="mobile-location">{}</span>'.format(esc(SECTIONS[0][1])))
+    p.append('<span class="mobile-updated" title="When this page was made.">{}</span>'.format(esc(updated)))
     p.append('<nav class="journey-nav" id="journey-nav" aria-label="Page sections">{}</nav></aside>'.format("".join(
         '<a class="journey-link" href="#{}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-{}"/></svg>'
         '<span class="nav-label">{}</span><span class="location-dot"></span></a>'.format(sid, icon, esc(label))
@@ -1596,8 +1736,14 @@ def render_html(s, refresh=False, warning=None):
         p.append('<div class="stat" title="{}"><span>{}</span><b>{}</b></div>'.format(esc(tip), esc(label), esc(value)))
     stat("vs. " + vs, change_text(s["change"], vs).replace(" than " + vs, "").replace("Same as " + vs, "Same"),
          "{}: {}.".format(vs[:1].upper() + vs[1:], money(s["yesterday"])))
-    stat("Daily average", money(s["average"]), "Average cost per day over the last {}.".format(plural(s["days_shown"], "day")))
-    stat("Updated", when(s["generated"], ""), "When this page was made.")
+    a = s[PAGE_AVG_KEY]
+    if a["average"] is not None:
+        stat("{}-day average".format(a["days"]), money(a["average"]),
+             "Average cost per day over the last {} days.".format(a["days"]))
+    else:
+        stat("{}-day average".format(a["days"]), "not yet",
+             "Not enough days of logs yet: they go back to {}.".format(plain_md(a["first_day"])) if a["first_day"]
+             else "Not enough days of logs yet.")
     p.append('</div></header>')
     if warning:
         p.append('<p class="note warn">Warning: {}</p>'.format(esc(warning)))
@@ -1851,7 +1997,9 @@ def try_open(path):
 
 def run_once(args, prices, target, root):
     first = target - timedelta(days=max(args.days, 1) - 1)
-    data = scan(root, first, target, prices)
+    # only a page shows the 30-day average, so only a page reads the extra days
+    page = (args.html or args.artifact or args.watch) and not args.json
+    data = scan(root, first, target, prices, history_days=AVG_DAYS if page else 0)
     return summarize(data, target, args.days)
 
 
@@ -1924,6 +2072,7 @@ def main(argv=None):
     s = run_once(args, prices, target, root)
     if args.json:
         s.pop(PAGE_TLDR_KEY, None)
+        s.pop(PAGE_AVG_KEY, None)
         s["prices_warning"] = warning
         print(json.dumps(s, indent=2))
         return 0
