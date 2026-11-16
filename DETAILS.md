@@ -36,6 +36,31 @@ Run from the skill folder:
 
 On Windows use `python` or `py` in place of `python3`. The file path of the dashboard is always printed; if no browser can be opened, the script carries on. Exit code is 0 on success and non-zero with a message on bad flags. If `CLAUDE_CONFIG_DIR` is set, transcripts are read from there instead of `~/.claude`.
 
+## On a VPS or server
+
+It runs the same on a Linux server where Claude Code runs: same install, same commands. `--html` writes the page and prints its path, but there is no browser on the server to open it. Two ways to view it:
+
+1. Copy it to your computer, then open it:
+
+```
+scp you@your-server:~/.claude/skills/claude-spend/dashboard.html .
+```
+
+2. Or serve it over an SSH tunnel, so it keeps updating with `--watch`. On the server:
+
+```
+cd ~/.claude/skills/claude-spend && python3 spend.py --watch --no-open &
+python3 -m http.server 8765 --bind 127.0.0.1
+```
+
+On your computer:
+
+```
+ssh -L 8765:127.0.0.1:8765 you@your-server
+```
+
+Then open http://127.0.0.1:8765/dashboard.html. Binding to 127.0.0.1 keeps the page off the public internet; it contains your prompts.
+
 ## How cost is worked out
 
 Claude Code writes each session to `~/.claude/projects/<project-folder>/<session-id>.jsonl`, and subagents to `.../<session-id>/subagents/agent-*.jsonl`, which are counted under their parent session. For each response:

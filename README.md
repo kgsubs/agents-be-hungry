@@ -30,6 +30,7 @@ Ask Claude any of these:
 
 - **It's an estimate.** The dollars are what your usage would cost at Anthropic's API prices. On a Pro or Max plan you don't pay this amount; it's what the same work would cost on the API.
 - **It only works for Claude Code on your own computer**, in the Claude desktop app or a terminal. It can't see the regular Claude chat, or Claude Code in the browser (claude.ai/code), because those run on Anthropic's computers.
+- **Power users: it works on a VPS or any server too.** If you run Claude Code on a Linux server, install it the same way and ask the same questions. The server has no browser, so view the dashboard page the way [DETAILS.md](DETAILS.md#on-a-vps-or-server) shows.
 - **It needs Python 3.** Most computers already have it. If Claude says it's missing, ask Claude to help you install it.
 - **It's private.** Nothing leaves your computer. The dashboard page shows your own prompts, so don't share it as is.
 - **New session?** If Claude doesn't seem to know the skill right after installing, start a new Claude Code session.
