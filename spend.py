@@ -1703,19 +1703,7 @@ def render_html(s, refresh=False, warning=None):
              'own running total, for closed sessions. A model marked "no price" isn\'t in the price list (prices.json), '
              'so it\'s left out of every total.</p></article>')
 
-    # cost by project
-    p.append('<article class="block"><h3>Cost by project</h3><p class="lead">Each folder Claude Code worked in on this day.</p>')
-    p.append('{}<thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
-        _table_open("Cost by project table"),
-        _th("Folder", "The project folder Claude Code worked in."),
-        _th("Sessions", "Sessions in this folder on this day.", True),
-        _th("Subagents", "Subagents those sessions started.", True),
-        _th("Cost", "Estimated cost at API prices, background calls included.", True)))
-    for r in s["projects"]:
-        p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(r["project"]), _td(num(r["sessions"])), _td(num(r["subagents"])), _td(money(r["cost"]), "r tot")))
-    if not s["projects"]:
-        p.append('<tr><td colspan="4" class="dim">No sessions on this day.</td></tr>')
-    p.append('</tbody></table></div></article></section>')
+    p.append('</section>')
 
     # biggest sessions: the money columns run in the order they add up to the total
     shown = min(len(s["sessions"]), TOP_SESSIONS)

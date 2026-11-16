@@ -448,10 +448,11 @@ class SpendTests(unittest.TestCase):
         self.fx.write("proj/s.jsonl", [user("secret prompt"), line("m1", "r1", inp=1000)])
         _, s = run_summary(self.fx.root)
         page = spend.render_html(s)
-        for needle in ("Don&#x27;t share it as is", "Cost by type", "Tokens by type", "Cost by model", "Cost by project",
+        for needle in ("Don&#x27;t share it as is", "Cost by type", "Tokens by type", "Cost by model",
                        "Biggest sessions", "Biggest subagents", "Cost by day", "The last 7 days", "Cost by hour",
                        "How it&#x27;s counted", "This is an estimate at API prices", "secret prompt"):
             self.assertIn(needle, page)
+        self.assertNotIn("Cost by project", page)
         self.assertEqual(page.count("serif"), page.count("sans-serif"))   # no serif font anywhere
 
     def test_artifact_page(self):
@@ -785,7 +786,7 @@ class PageTests(unittest.TestCase):
         tables = self.page.count("<table")
         regions = re.findall(r'<div class="scroll table-scroll"[^>]* tabindex="0" role="region" aria-label="[^"]+"><table', self.page)
         self.assertEqual(tables, len(regions))
-        self.assertEqual(tables, 6)
+        self.assertEqual(tables, 5)
         self.assertEqual(self.page.count('scope="col"'), self.page.count("<th "))
         self.assertEqual(len(re.findall(r'<div class="scroll chart" tabindex="0" role="region"', self.page)), 2)
 
