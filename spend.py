@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""claude-spend: estimate Claude Code spend from local session transcripts.
+"""agents-be-hungry: estimate Claude Code spend from local session transcripts.
 
 Reads ~/.claude/projects/**.jsonl (or $CLAUDE_CONFIG_DIR/projects), read only.
 Makes no network calls. Python 3 standard library only.

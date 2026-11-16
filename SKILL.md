@@ -1,15 +1,15 @@
 ---
-name: claude-spend
+name: agents-be-hungry
 description: Shows what Claude Code usage has cost today, including every subagent by name and every model, as an estimate at API list prices, with a dashboard page that can be published as a private artifact. Use when the user asks what they have spent, their cost today, their token usage, or for their spend dashboard.
 ---
 
-# claude-spend
+# agents-be-hungry
 
 Reads the local Claude Code transcripts (read only, no network) and prices them from `prices.json`.
 
 ## Run it
 
-From this skill's folder (normally `~/.claude/skills/claude-spend/`, on Windows `%USERPROFILE%\.claude\skills\claude-spend\`). Use `python3` (on Windows, `python` or `py`).
+From this skill's folder (normally `~/.claude/skills/agents-be-hungry/`, on Windows `%USERPROFILE%\.claude\skills\agents-be-hungry\`). Use `python3` (on Windows, `python` or `py`).
 
 - `python3 spend.py` prints today's total, what the money paid for, every model, the biggest sessions and helper agents (subagents), by project, by hour, the last 7 days and how it was counted.
 - `--artifact` also writes `artifact.html` in this folder, the page to publish as an artifact, and prints its path.

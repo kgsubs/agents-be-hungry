@@ -1,4 +1,4 @@
-# claude-spend
+# agents-be-hungry
 
 See what your Claude Code usage cost today, subagents included.
 
@@ -28,7 +28,7 @@ If your Claude can make artifacts, the page is saved to your Claude account as a
 2. Send Claude this message:
 
 ```
-Install the claude-spend skill: clone https://github.com/kgsubs/claude-spend into ~/.claude/skills/claude-spend (on Windows: %USERPROFILE%\.claude\skills\claude-spend). If git isn't installed, download https://github.com/kgsubs/claude-spend/archive/refs/heads/main.zip and put the files from its claude-spend-main folder there instead. Then tell me what I've spent today.
+Install the agents-be-hungry skill: clone https://github.com/kgsubs/agents-be-hungry into ~/.claude/skills/agents-be-hungry (on Windows: %USERPROFILE%\.claude\skills\agents-be-hungry). If git isn't installed, download https://github.com/kgsubs/agents-be-hungry/archive/refs/heads/main.zip and put the files from its agents-be-hungry-main folder there instead. Then tell me what I've spent today.
 ```
 
 3. If Claude asks for permission, say yes.
@@ -67,8 +67,8 @@ The page shows your messages, subagent names and project folders, so don't share
 
 ## Update or remove
 
-- To update, ask Claude: "Update the claude-spend skill."
-- To remove, ask Claude: "Remove the claude-spend skill."
+- To update, ask Claude: "Update the agents-be-hungry skill."
+- To remove, ask Claude: "Remove the agents-be-hungry skill."
 
 ## More
 

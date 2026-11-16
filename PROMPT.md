@@ -1,4 +1,4 @@
-Build me a Claude Code skill called `claude-spend` that shows how much my Claude Code usage has cost today, including every subagent, as a simple local dashboard. It must work on macOS, Linux and Windows, and it must be safe to publish as open source: no personal paths, names or keys anywhere in it.
+Build me a Claude Code skill called `agents-be-hungry` that shows how much my Claude Code usage has cost today, including every subagent, as a simple local dashboard. It must work on macOS, Linux and Windows, and it must be safe to publish as open source: no personal paths, names or keys anywhere in it.
 
 ## What I want to see
 
@@ -42,7 +42,7 @@ Design: one self-contained page, inline CSS and SVG, calm and simple: white back
 
 ## How it is built
 
-1. Skill folder: `~/.claude/skills/claude-spend/` (on Windows `%USERPROFILE%\.claude\skills\claude-spend\`) containing `SKILL.md`, `spend.py`, `prices.json`, `README.md`, `LICENSE` (MIT), `.gitignore` and a `tests` folder.
+1. Skill folder: `~/.claude/skills/agents-be-hungry/` (on Windows `%USERPROFILE%\.claude\skills\agents-be-hungry\`) containing `SKILL.md`, `spend.py`, `prices.json`, `README.md`, `LICENSE` (MIT), `.gitignore` and a `tests` folder.
 2. `spend.py` uses the Python 3 standard library only, no installs, and works on macOS, Linux and Windows. Console output must not crash on characters the Windows console cannot show: replace them.
 3. `python3 spend.py` prints every section above to the terminal; `--json` prints them as JSON.
 4. `python3 spend.py --html` writes one self-contained `dashboard.html` (inline CSS and SVG, no outside scripts or fonts, a clean sans-serif font) to the skill folder, or to the path given by `--out`, opens it with `webbrowser`, and prints the file path whether or not a browser opened. When no browser exists it does not fail.

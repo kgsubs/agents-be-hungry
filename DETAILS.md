@@ -1,4 +1,4 @@
-# claude-spend: technical details
+# agents-be-hungry: technical details
 
 The simple guide is in [README.md](README.md). This page is for people who want the commands and the math.
 
@@ -7,13 +7,13 @@ The simple guide is in [README.md](README.md). This page is for people who want 
 macOS and Linux:
 
 ```
-git clone https://github.com/kgsubs/claude-spend ~/.claude/skills/claude-spend
+git clone https://github.com/kgsubs/agents-be-hungry ~/.claude/skills/agents-be-hungry
 ```
 
 Windows (Command Prompt):
 
 ```
-git clone https://github.com/kgsubs/claude-spend %USERPROFILE%\.claude\skills\claude-spend
+git clone https://github.com/kgsubs/agents-be-hungry %USERPROFILE%\.claude\skills\agents-be-hungry
 ```
 
 ## Requirements
@@ -60,13 +60,13 @@ It runs the same on a Linux server where Claude Code runs: same install, same co
 1. Copy it to your computer, then open it:
 
 ```
-scp you@your-server:~/.claude/skills/claude-spend/dashboard.html .
+scp you@your-server:~/.claude/skills/agents-be-hungry/dashboard.html .
 ```
 
 2. Or serve it over an SSH tunnel, so it keeps updating with `--watch`. On the server:
 
 ```
-cd ~/.claude/skills/claude-spend && python3 spend.py --watch --no-open &
+cd ~/.claude/skills/agents-be-hungry && python3 spend.py --watch --no-open &
 python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
@@ -126,5 +126,5 @@ Transcripts are read one line at a time, read only. Lines that cannot be parsed,
 
 ## Update and uninstall
 
-Update: run `git pull` inside the skill folder. Uninstall: delete the skill folder (`~/.claude/skills/claude-spend`, or `%USERPROFILE%\.claude\skills\claude-spend` on Windows).
+Update: run `git pull` inside the skill folder. Uninstall: delete the skill folder (`~/.claude/skills/agents-be-hungry`, or `%USERPROFILE%\.claude\skills\agents-be-hungry` on Windows).
 
