@@ -657,7 +657,7 @@ class SpendTests(unittest.TestCase):
         self.assertIsNone(a["average"])
         self.assertEqual(a["first_day"], (date.today() - timedelta(days=20)).isoformat())
         stat = self.hero_stats(s)[1]
-        self.assertEqual(stat[1:], ("30-day average", "not yet"))
+        self.assertEqual(stat[1:], ("30-day average", "9 more days of data required"))
         first = date.today() - timedelta(days=20)
         self.assertEqual(stat[0], "Not enough days of logs yet: they go back to {} {}.".format(first.strftime("%b"), first.day))
 
@@ -671,6 +671,7 @@ class SpendTests(unittest.TestCase):
         self.write_days([0, 28])
         _, s = self.avg()
         self.assertIsNone(s[spend.PAGE_AVG_KEY]["average"])
+        self.assertEqual(self.hero_stats(s)[1][2], "1 more day of data required")
 
     def test_average_uses_only_the_last_30_days(self):
         self.write_days([0, 1, 45, 31])                   # the two old days are outside the window
@@ -696,7 +697,7 @@ class SpendTests(unittest.TestCase):
         self.fx.write("proj/s.jsonl", [user("hi")])
         _, s = self.avg()
         self.assertIsNone(s[spend.PAGE_AVG_KEY]["average"])
-        self.assertEqual(self.hero_stats(s)[1][2], "not yet")
+        self.assertEqual(self.hero_stats(s)[1][2], "30 more days of data required")
         self.assertEqual(self.hero_stats(s)[1][0], "Not enough days of logs yet.")
 
     def test_history_read_matches_a_full_read(self):

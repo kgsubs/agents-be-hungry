@@ -905,7 +905,7 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
 
 def window_average(data, gaps, target, days=AVG_DAYS):
     """The page's average cost per day over the `days` days ending on target, background calls
-    included, zero days counted. It is None ("not yet") unless the logs reach back to the first
+    included, zero days counted. It is None (the page says how many more days it needs) unless the logs reach back to the first
     day of that window: the first day with logged usage must be on or before it."""
     hist = data.get("history")
     recs = data["records"] + (hist["records"] if hist else [])
@@ -929,7 +929,8 @@ def window_average(data, gaps, target, days=AVG_DAYS):
     value = None
     if first is not None and first <= start:
         value = sum(logged[start + timedelta(days=i)] + hidden[start + timedelta(days=i)] for i in range(days)) / days
-    return {"days": days, "average": value, "first_day": first.isoformat() if first else None}
+    needed = 0 if value is not None else ((first - start).days if first is not None else days)
+    return {"days": days, "average": value, "first_day": first.isoformat() if first else None, "needed": needed}
 
 
 def summarize(data, target, ndays=7, now=None):
@@ -1741,7 +1742,8 @@ def render_html(s, refresh=False, warning=None):
         stat("{}-day average".format(a["days"]), money(a["average"]),
              "Average cost per day over the last {} days.".format(a["days"]))
     else:
-        stat("{}-day average".format(a["days"]), "not yet",
+        stat("{}-day average".format(a["days"]),
+             "{} more {} of data required".format(a["needed"], "day" if a["needed"] == 1 else "days"),
              "Not enough days of logs yet: they go back to {}.".format(plain_md(a["first_day"])) if a["first_day"]
              else "Not enough days of logs yet.")
     p.append('</div></header>')
