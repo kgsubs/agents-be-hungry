@@ -1615,7 +1615,7 @@ def render_html(s, refresh=False, warning=None):
     if t["empty"]:
         p.append('<p class="lead">{}</p>'.format(esc(t["meaning"])))
     else:
-        p.append('<div class="tl"><h3>Findings</h3><ul>{}</ul></div>'.format(
+        p.append('<div class="tl"><ul>{}</ul></div>'.format(
             "".join("<li>{}</li>".format(esc(f)) for f in t["findings"])))
         p.append('<div class="tl insight"><h3>Meaning</h3><p>{}</p></div>'.format(esc(t["meaning"])))
         p.append('<div class="tl"><h3 title="Hover a dollar figure to see the math.">{}</h3>'.format(
