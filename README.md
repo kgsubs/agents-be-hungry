@@ -35,7 +35,7 @@ Ask Claude any of these:
 - **Power users: it works on a VPS or any server too.** If you run Claude Code on a Linux server, install it the same way and ask the same questions. The server has no browser, so view the dashboard page the way [DETAILS.md](DETAILS.md#on-a-vps-or-server) shows.
 - **It needs Python 3.** Most computers already have it. If Claude says it's missing, ask Claude to help you install it.
 - **It's private.** The numbers stay on your computer unless you use the artifact link, which is private to your Claude account. The page shows your own prompts, so don't share it as is.
-- **Some calls aren't written down.** Claude Code makes a few behind-the-scenes calls (like summarizing a long chat) that it doesn't save in its logs. The page shows their cost separately, from Claude Code's own tally, once a session is closed.
+- **Some calls aren't written down.** Claude Code makes a few behind-the-scenes calls (like summarizing a long chat) that it doesn't save in its logs. Their cost is included in the totals, from Claude Code's own tally, once a session is closed. A session still open is added when it closes.
 - **New session?** If Claude doesn't seem to know the skill right after installing, start a new Claude Code session.
 
 ## Update or remove

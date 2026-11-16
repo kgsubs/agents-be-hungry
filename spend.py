@@ -33,7 +33,8 @@ PRIVACY_LINE = ("This page shows your messages, agent names and project folders.
                 "Don't share it as is.")
 HIDDEN_LINE = ("Hidden background calls: Claude Code also works behind the scenes (shrinking long chats, "
                "naming sessions, safety checks) and doesn't save those calls in its logs. "
-               "Their cost comes from Claude Code's own running total, once a session closes.")
+               "Their cost comes from Claude Code's own running total once a session closes, "
+               "and is included in every total.")
 TOKEN_LINE = "Tokens are word pieces. One token is about 3/4 of a word."
 PAGE_TITLE = "Claude Code Spend"
 RUNNING_SECONDS = 300
@@ -64,7 +65,11 @@ COST_TYPES = (
 COST_PHRASES = {"output": "Claude's replies", "cache_read": "Claude re-reading the chat",
                 "cache_write_5m": "saving to short-term memory (5 min)",
                 "cache_write_1h": "saving to longer memory (1 hour)",
-                "input": "new text sent", "searches": "web searches"}
+                "input": "new text sent", "searches": "web searches",
+                "hidden": "hidden background calls"}
+HIDDEN_ROW = ("hidden", "Hidden background calls",
+              "Calls Claude Code makes behind the scenes (shrinking long chats, naming sessions, safety checks) "
+              "and doesn't save in its logs. Known once a session closes.")
 
 
 # ---------------------------------------------------------------- prices
@@ -685,7 +690,7 @@ def build_tldr(data, day_recs, token_types, model_rows, sub_rows, sess_rows, tot
                      "basis": "Your 3 costliest helper agents cost {}, {:.0f}% of the day. No saving estimated.".format(money(tcost), pct(tcost))})
     nl = quality["not_logged"] or 0.0
     if nl / total >= 0.10:
-        info.append({"action": "Hidden background calls (like shrinking long chats) added {:.0f}% on top. "
+        info.append({"action": "Hidden background calls (like shrinking long chats) were {:.0f}% of the total. "
                                "Fewer long sessions means fewer of them.".format(pct(nl)),
                      "saving_usd": 0.0,
                      "basis": "Claude Code's own running total shows {} not in its logs, {:.0f}% of {}. No saving estimated.".format(
@@ -724,10 +729,13 @@ def summarize(data, target, ndays=7, now=None):
             if r["day"] == d and r["cost"] is not None:
                 bym[r["model"]] += r["cost"]
         nl = sum(v for (dd, m), v in gaps["day_model"].items() if dd == d)
-        days.append({"date": d.isoformat(), "total": sum(bym.values()), "by_model": dict(bym),
-                     "not_logged": nl, "open_sessions": len(gaps["open"].get(d, ()))})
+        days.append({"date": d.isoformat(), "logged": sum(bym.values()), "total": sum(bym.values()) + nl,
+                     "by_model": dict(bym), "not_logged": nl, "open_sessions": len(gaps["open"].get(d, ()))})
     total = days[-1]["total"]
-    yesterday_total = sum(r["cost"] for r in recs if r["day"] == target - timedelta(days=1) and r["cost"] is not None)
+    logged_total = days[-1]["logged"]
+    yday = target - timedelta(days=1)
+    yesterday_total = (sum(r["cost"] for r in recs if r["day"] == yday and r["cost"] is not None)
+                       + sum(v for (dd, m), v in gaps["day_model"].items() if dd == yday))
 
     # models: every model seen in the window, or in a tally for the window
     models = {}
@@ -735,19 +743,20 @@ def summarize(data, target, ndays=7, now=None):
     def mrow(name):
         return models.setdefault(name, {"model": name, "priced": True, "cost": 0.0, "responses": 0,
                                         "tokens": _blank_tok(), "window_cost": 0.0, "window_responses": 0,
+                                        "logged_cost": 0.0, "window_logged_cost": 0.0,
                                         "not_logged": 0.0, "window_not_logged": 0.0})
     for r in win_recs:
         m = mrow(r["model"])
         if r["cost"] is None:
             m["priced"] = False
         else:
-            m["window_cost"] += r["cost"]
+            m["window_logged_cost"] += r["cost"]
         m["window_responses"] += r["resp"]
         if r["day"] == target:
             m["responses"] += r["resp"]
             _add_tok(m["tokens"], r["tok"])
             if r["cost"] is not None:
-                m["cost"] += r["cost"]
+                m["logged_cost"] += r["cost"]
     for (d, name), g in gaps["day_model"].items():
         if first <= d <= target:
             m = mrow(name)
@@ -756,6 +765,9 @@ def summarize(data, target, ndays=7, now=None):
             m["window_not_logged"] += g
             if d == target:
                 m["not_logged"] += g
+    for m in models.values():
+        m["cost"] = m["logged_cost"] + m["not_logged"]
+        m["window_cost"] = m["window_logged_cost"] + m["window_not_logged"]
     model_rows = sorted(models.values(), key=lambda m: (-m["cost"], -m["window_cost"], m["model"]))
 
     # where the money went
@@ -770,6 +782,10 @@ def summarize(data, target, ndays=7, now=None):
     for k, label, explain in COST_TYPES:
         token_types.append({"key": k, "label": label, "explain": explain, "tokens": toks[k],
                             "cost": parts[k], "percent": (100.0 * parts[k] / total) if total else 0.0})
+    hk, hlabel, hexplain = HIDDEN_ROW
+    hidden_day = days[-1]["not_logged"]
+    token_types.append({"key": hk, "label": hlabel, "explain": hexplain, "tokens": None,
+                        "cost": hidden_day, "percent": (100.0 * hidden_day / total) if total else 0.0})
 
     # hours
     hours = []
@@ -841,7 +857,8 @@ def summarize(data, target, ndays=7, now=None):
         sess_rows.append({
             "project": key[0], "session": key[1], "start": _iso(info.get("start")),
             "prompt": info.get("prompt") or "", "main": v["main"], "sub": v["sub"],
-            "total": v["main"] + v["sub"], "unpriced_responses": v["unpriced"],
+            "logged": v["main"] + v["sub"], "total": v["main"] + v["sub"] + (g or 0.0),
+            "unpriced_responses": v["unpriced"],
             "subagents": len(v["agents"]),
             "models": [k for k, _ in sorted(v["models"].items(), key=lambda kv: -kv[1])],
             "running": target == date.today() and (now - info.get("mtime", 0)) <= RUNNING_SECONDS,
@@ -850,20 +867,24 @@ def summarize(data, target, ndays=7, now=None):
     sess_rows.sort(key=lambda r: (-r["total"], r["session"]))
 
     # projects
-    proj = defaultdict(lambda: {"cost": 0.0, "sessions": set(), "subagents": set()})
+    proj = defaultdict(lambda: {"logged": 0.0, "hidden": 0.0, "sessions": set(), "subagents": set()})
     for r in day_recs:
         p = proj[r["session"][0]]
         p["sessions"].add(r["session"][1])
         if r["is_sub"]:
             p["subagents"].add(r["agent"])
         if r["cost"] is not None:
-            p["cost"] += r["cost"]
-    proj_rows = sorted(({"project": k, "cost": v["cost"], "sessions": len(v["sessions"]),
+            p["logged"] += r["cost"]
+    for (d, key), g in gaps["day_session"].items():
+        if d == target and key[0] in proj:
+            proj[key[0]]["hidden"] += g
+    proj_rows = sorted(({"project": k, "cost": v["logged"] + v["hidden"], "logged": v["logged"],
+                         "not_logged": v["hidden"], "sessions": len(v["sessions"]),
                          "subagents": len(v["subagents"])} for k, v in proj.items()),
                        key=lambda r: (-r["cost"], r["project"]))
 
     # chart series: the biggest models over the window keep their own colour
-    order = sorted(((m["window_cost"], m["model"]) for m in model_rows if m["window_cost"] > 0), reverse=True)
+    order = sorted(((m["window_logged_cost"], m["model"]) for m in model_rows if m["window_logged_cost"] > 0), reverse=True)
     series = [name for _, name in order[:CHART_SERIES]]
 
     # data quality
@@ -890,13 +911,15 @@ def summarize(data, target, ndays=7, now=None):
         "open_sessions": days[-1]["open_sessions"],
         "negative_tally_intervals": gaps["negative"],
         "unpriced_models": [m["model"] for m in model_rows if not m["priced"]],
+        "logged_total": logged_total,
         "prices_date": pr.get("date_read"), "prices_age_days": price_age_days(pr),
         "prices_source": pr.get("source_url"),
     }
     return {
         "date": target.isoformat(), "generated": _iso(datetime.fromtimestamp(now).astimezone()),
         "estimate_line": ESTIMATE_LINE, "days_shown": ndays,
-        "total": total, "yesterday": yesterday_total, "change": total - yesterday_total,
+        "total": total, "logged_total": logged_total, "not_logged": days[-1]["not_logged"],
+        "open_sessions": days[-1]["open_sessions"], "yesterday": yesterday_total, "change": total - yesterday_total,
         "average": sum(d["total"] for d in days) / len(days),
         "running_sessions": sum(1 for r in sess_rows if r["running"]),
         "token_types": token_types, "models": model_rows, "sessions": sess_rows,
@@ -1092,6 +1115,13 @@ def tips_heading(n):
     return "Top {} ways to spend less".format(n) if n else "Ways to spend less"
 
 
+def open_text(n):
+    """The one plain line about sessions whose hidden calls aren't known yet."""
+    if n == 1:
+        return "1 session is still open; its background calls get added when it closes."
+    return "{} are still open; their background calls get added when they close.".format(plural(n, "session"))
+
+
 def vs_word(s):
     return "yesterday" if s["date"] == date.today().isoformat() else "the day before"
 
@@ -1102,15 +1132,13 @@ def render_text(s, warning=None):
     o.append("Claude Code spend: {}: {}".format(day_name(s["date"]), money(s["total"])))
     o.append("  {}   Daily average (last {} days) {}   Updated {}".format(
         change_text(s["change"], vs_word(s)), s["days_shown"], money(s["average"]), hhmm(s["generated"])))
-    o.extend(tldr_text(s["tldr"]))
     if q["not_logged"]:
-        o.append("  Hidden background calls: about {} more, on top of the total".format(money(q["not_logged"])))
+        o.append("  Includes {} of hidden background calls (logged {}).".format(money(q["not_logged"]), money(s["logged_total"])))
+    if q["open_sessions"]:
+        o.append("  " + open_text(q["open_sessions"]))
+    o.extend(tldr_text(s["tldr"]))
     if q["not_logged"] or q["open_sessions"]:
         o.append("  " + HIDDEN_LINE)
-    if q["open_sessions"]:
-        o.append("  {} still open, so {} hidden cost isn't known yet.".format(
-            plural(q["open_sessions"], "session") + (" is" if q["open_sessions"] == 1 else " are"),
-            "its" if q["open_sessions"] == 1 else "their"))
     o.append(ESTIMATE_LINE)
     if warning:
         o.append("Warning: " + warning)
@@ -1118,12 +1146,13 @@ def render_text(s, warning=None):
     o.append("")
     o.append("Where the money went  (" + TOKEN_LINE + ")")
     o += _table(["", "Tokens", "Cost", "Share"],
-                [[t["label"], plural(t["tokens"], "search", "searches") if t["key"] == "searches" else num(t["tokens"]),
+                [[t["label"], "--" if t["tokens"] is None else
+                  (plural(t["tokens"], "search", "searches") if t["key"] == "searches" else num(t["tokens"])),
                   money(t["cost"]), "{:.1f}%".format(t["percent"])]
                  for t in s["token_types"]], {1, 2, 3})
 
     o.append("")
-    o.append("By model  (token counts are for this day only)")
+    o.append("By model  (token counts are for this day only; costs include hidden background calls)")
     rows = []
     for m in s["models"]:
         t = m["tokens"]
@@ -1138,11 +1167,13 @@ def render_text(s, warning=None):
     o.append("Biggest sessions  (costliest first, helper agents included)")
     rows = []
     for r in s["sessions"][:TOP_SESSIONS]:
-        rows.append([money(r["total"]), money(r["main"]), money(r["sub"]), str(r["subagents"]),
+        rows.append([money(r["total"]), money(r["main"]), money(r["sub"]),
+                     "not yet" if r["not_logged"] is None else (money(r["not_logged"]) if r["not_logged"] else ""),
+                     str(r["subagents"]),
                      when(r["start"], s["date"]), cut(r["project"], 24), models_text(r["models"]),
                      cut(r["prompt"], 48) + ("  [running]" if r["running"] else "")])
-    o += _table(["Total", "Main chat", "Helpers", "Agents", "Started", "Project", "Models", "First message"],
-                rows, {0, 1, 2, 3})
+    o += _table(["Total", "Main chat", "Helpers", "Hidden", "Agents", "Started", "Project", "Models", "First message"],
+                rows, {0, 1, 2, 3, 4})
 
     o.append("")
     o.append("Biggest helper agents  (subagents: extra agents a session starts for a side job)")
@@ -1163,7 +1194,7 @@ def render_text(s, warning=None):
                 {0, 1, 2})
 
     o.append("")
-    o.append("By hour  (your local time)")
+    o.append("By hour  (your local time; hidden background calls aren't tied to an hour, so they aren't here)")
     series = s["chart_series"]
     short = [model_name(m) for m in series]
 
@@ -1209,13 +1240,13 @@ def counted_rows(q):
             num(q["requests_no_usage"]), num(q["requests_logged"]),
             " ({})".format(why_text(q["requests_no_usage_why"])) if q["requests_no_usage"] else ""),
          "Calls to Claude that started but have no token count in the logs, so they aren't in the total."),
-        ("Chat shrinks (/compact)", "{}; {} tokens shrunk. Their cost isn't in the logs.".format(
+        ("Chat shrinks (/compact)", "{}; {} tokens shrunk. Their cost is a hidden background call.".format(
             plural(q["compactions"], "time"), tok_short(q["compacted_tokens"])),
          "When a chat gets long, Claude Code sums it up to make room. That call is a hidden background call."),
-        ("Hidden background calls", "{} from Claude Code's own running total, for closed sessions{}".format(
+        ("Hidden background calls", "{} from Claude Code's own running total, included in the total, for closed sessions{}".format(
             money(q["not_logged"]),
-            "; {} still open, not known yet".format(plural(q["open_sessions"], "session")) if q["open_sessions"] else ""),
-         "Calls Claude Code makes behind the scenes and doesn't save in its logs."),
+            "; {} still open, not added yet".format(plural(q["open_sessions"], "session")) if q["open_sessions"] else ""),
+         "Calls Claude Code makes behind the scenes and doesn't save in its logs. They are part of every total."),
         ("Models with no price", ", ".join(q["unpriced_models"]) or "none",
          "Models missing from the price list (prices.json). Their cost is left out of every total."),
         ("Prices", "checked {} ({}), from {}".format(plain_date(q["prices_date"]), ago(q["prices_age_days"]), q["prices_source"]),
@@ -1331,11 +1362,11 @@ def _stack(by_model, series):
 
 def stacked_chart(labels, stacks, totals, extra=None, label_every=1, show_totals=True, w=960, h=260):
     """Vertical stacked bars. stacks: per bar [(class, name, value)]. extra: per bar
-    value drawn hatched on top (calls not in transcripts)."""
+    value (hidden background calls) drawn hatched on top, inside the bar. totals
+    are the full bar heights, extra included."""
     pad_b, pad_t = 28, 28
     n = len(labels)
-    tops = [totals[i] + ((extra[i] if extra and extra[i] > 0 else 0)) for i in range(n)]
-    mx = max(tops) if tops and max(tops) > 0 else 1.0
+    mx = max(totals) if totals and max(totals) > 0 else 1.0
     slot = w / max(n, 1)
     bw = min(slot * 0.62, 64)
     ph = h - pad_b - pad_t
@@ -1434,17 +1465,16 @@ def render_html(s, refresh=False, warning=None):
     stat("vs " + vs, change_text(s["change"], vs).replace(" than " + vs, "").replace("Same as " + vs, "Same"),
          "{}: {}.".format(vs[:1].upper() + vs[1:], money(s["yesterday"])))
     stat("Daily average", money(s["average"]), "Average cost per day over the last {}.".format(plural(s["days_shown"], "day")))
-    if q["not_logged"]:
-        stat("Hidden calls", "+" + money(q["not_logged"]), HIDDEN_LINE + " Not in the big number above.")
     stat("Updated", hhmm(s["generated"]), "When this page was made.")
     p.append('</div>')
     p.append('<p class="note">{}</p>'.format(esc(ESTIMATE_LINE)))
+    if q["not_logged"]:
+        p.append('<p class="note">Includes {} of hidden background calls (logged {}).</p>'.format(
+            esc(money(q["not_logged"])), esc(money(s["logged_total"]))))
     if q["not_logged"] or q["open_sessions"]:
         p.append('<p class="note">{}</p>'.format(esc(HIDDEN_LINE)))
     if q["open_sessions"]:
-        n = q["open_sessions"]
-        p.append('<p class="note">{} still open, so {} hidden cost isn\'t known yet.</p>'.format(
-            plural(n, "session") + (" is" if n == 1 else " are"), "its" if n == 1 else "their"))
+        p.append('<p class="note">{}</p>'.format(esc(open_text(q["open_sessions"]))))
     if warning:
         p.append('<p class="note warn">Warning: {}</p>'.format(esc(warning)))
     p.append('</div>')
@@ -1491,14 +1521,15 @@ def render_html(s, refresh=False, warning=None):
         _th("Share", "Share of the day's cost.", True)))
     for t in s["token_types"]:
         sw = '<i class="sw s{}"></i>'.format(rank[t["key"]]) if t["cost"] > 0 else '<i class="sw"></i>'
-        cell = (_td(plural(t["tokens"], "search", "searches")) if t["key"] == "searches" else _tok_td(t["tokens"]))
+        cell = (_td("--") if t["tokens"] is None else
+                _td(plural(t["tokens"], "search", "searches")) if t["key"] == "searches" else _tok_td(t["tokens"]))
         p.append('<tr><td class="p">{}{}<div class="dim small">{}</div></td>{}{}{}</tr>'.format(
             sw, _nb(t["label"]), esc(t["explain"]), cell,
             _td(money(t["cost"])), _td("{:.1f}%".format(t["percent"]))))
     p.append('</tbody></table></div></div>')
 
     # token tiles
-    tk = {t["key"]: t["tokens"] for t in s["token_types"]}
+    tk = {t["key"]: t["tokens"] for t in s["token_types"] if t["tokens"] is not None}
     p.append('<div class="card"><h2 title="{}">Tokens used</h2><div class="tiles">'.format(esc(TOKEN_LINE)))
     for lab, val, tip in (("New text sent", tk["input"], "Text sent to Claude that wasn't saved to memory."),
                           ("Claude's replies", tk["output"], "Everything Claude wrote."),
@@ -1510,18 +1541,18 @@ def render_html(s, refresh=False, warning=None):
 
     # by model
     p.append('<div class="card"><h2>By model</h2><p class="lead">Each Claude model used in the last {}. '
-             'Token counts are for this day only.</p>'.format(plural(s["days_shown"], "day")))
+             'Token counts are for this day only. Costs include hidden background calls.</p>'.format(plural(s["days_shown"], "day")))
     p.append('<div class="scroll"><table><thead><tr>{}</tr></thead><tbody>'.format("".join([
         _th("Model", "The Claude model. Hover a name for its full id."),
-        _th("Cost", "Cost on this day.", True),
+        _th("Cost", "Cost on this day, hidden background calls included.", True),
         _th("Answers", "How many times this model answered.", True),
         _th("Replies", "Tokens Claude wrote.", True),
         _th("Re-read", "Tokens of chat Claude read again from memory.", True),
         _th("Memory 5m", "Tokens saved to short-term memory (5 min).", True),
         _th("Memory 1h", "Tokens saved to longer memory (1 hour).", True),
         _th("New text", "Tokens of new text sent, not saved to memory.", True),
-        _th("{}-day cost".format(s["days_shown"]), "Cost over the last {}.".format(plural(s["days_shown"], "day")), True),
-        _th("Hidden calls*", "Hidden background calls over the last {}. See the note below.".format(plural(s["days_shown"], "day")), True)])))
+        _th("{}-day cost".format(s["days_shown"]), "Cost over the last {}, hidden background calls included.".format(plural(s["days_shown"], "day")), True),
+        _th("Hidden calls*", "The part of the {}-day cost that is hidden background calls. See the note below.".format(s["days_shown"]), True)])))
     for m in s["models"]:
         t = m["tokens"]
         p.append('<tr><td class="nw">{}{}</td>{}{}{}{}{}{}{}{}{}</tr>'.format(
@@ -1533,7 +1564,7 @@ def render_html(s, refresh=False, warning=None):
             _td(money(m["window_not_logged"]) if m["window_not_logged"] else "")))
     if not s["models"]:
         p.append('<tr><td colspan="10" class="dim">Nothing used in these days.</td></tr>')
-    p.append('</tbody></table></div><p class="note">* Calls Claude Code makes behind the scenes and doesn\'t save in its logs, '
+    p.append('</tbody></table></div><p class="note">* Included in the cost columns. Calls Claude Code makes behind the scenes and doesn\'t save in its logs, '
              'from its own running total, for closed sessions. A model marked "no price" is missing from the price list '
              '(prices.json) and is left out of every total.</p></div>')
 
@@ -1550,8 +1581,8 @@ def render_html(s, refresh=False, warning=None):
         _th("Main chat", "Cost of the chat itself, without helper agents.", True),
         _th("Helpers", "Cost of the helper agents this session started.", True),
         _th("Agents", "How many helper agents it started.", True),
-        _th("Total", "Main chat plus helpers.", True),
-        _th("Hidden", "Hidden background calls for this session. \"Not yet\" means it's still open.", True)])))
+        _th("Total", "Main chat plus helpers plus hidden background calls.", True),
+        _th("Hidden", "The part of the total that is hidden background calls. \"Not yet\" means the session is still open, so they aren't added yet.", True)])))
     for r in s["sessions"][:TOP_SESSIONS]:
         badge = '<span class="tag run" title="Active in the last 5 minutes">running</span>' if r["running"] else ""
         nl = ('<span title="Still open; known once it closes">not yet</span>' if r["not_logged"] is None
@@ -1607,7 +1638,7 @@ def render_html(s, refresh=False, warning=None):
         _th("Folder", "The project folder Claude Code was working in."),
         _th("Sessions", "Chats in this folder on this day.", True),
         _th("Helpers", "Helper agents started from those chats.", True),
-        _th("Cost", "Estimated cost at API prices.", True)))
+        _th("Cost", "Estimated cost at API prices, hidden background calls included.", True)))
     for r in s["projects"]:
         p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(r["project"]), _td(num(r["sessions"])), _td(num(r["subagents"])), _td(money(r["cost"]), "r tot")))
     if not s["projects"]:
@@ -1617,7 +1648,7 @@ def render_html(s, refresh=False, warning=None):
     # hours
     hstacks = [_stack(h["by_model"], series) for h in s["hours"]]
     has_other = any(c == "s4" for st in hstacks for c, _, _ in st)
-    p.append('<div class="card"><h2>By hour</h2><p class="lead">Your local time. Hover a bar to see each model\'s cost.</p>{}<div class="scroll chart">{}</div></div>'.format(
+    p.append('<div class="card"><h2>By hour</h2><p class="lead">Your local time. Hover a bar to see each model\'s cost. Hidden background calls aren\'t tied to an hour, so they aren\'t here.</p>{}<div class="scroll chart">{}</div></div>'.format(
         legend(series, has_other),
         stacked_chart([hour_name(h["hour"]).replace(" am", "a").replace(" pm", "p") for h in s["hours"]], hstacks,
                       [h["total"] for h in s["hours"]], label_every=1, show_totals=False)))
@@ -1628,16 +1659,16 @@ def render_html(s, refresh=False, warning=None):
     gaps = [dd["not_logged"] for dd in s["days"]]
     n = len(s["days"])
     labels = [datetime.strptime(dd["date"], "%Y-%m-%d").strftime("%a %d" if n <= 14 else "%b %d").replace(" 0", " ") for dd in s["days"]]
-    p.append('<div class="card"><h2>Last {} days</h2><p class="lead">Each bar shows the day\'s cost.{}</p>{}<div class="scroll chart">{}</div>'.format(
-        n, " Striped tops are hidden background calls." if any(g > 0 for g in gaps) else "",
+    p.append('<div class="card"><h2>Last {} days</h2><p class="lead">Each bar shows the day\'s full cost.{}</p>{}<div class="scroll chart">{}</div>'.format(
+        n, " The striped part is hidden background calls." if any(g > 0 for g in gaps) else "",
         legend(series, has_other, any(g > 0 for g in gaps)),
         stacked_chart(labels, dstacks, [dd["total"] for dd in s["days"]], extra=gaps,
                       label_every=1 if n <= 14 else max(1, n // 10), show_totals=n <= 14)))
     p.append('<div class="scroll" style="margin-top:16px"><table class="narrow"><thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
         _th("Day", "Newest first."),
-        _th("Cost", "Estimated cost at API prices, from the logs.", True),
-        _th("Hidden calls", "Hidden background calls, on top of the cost.", True),
-        _th("Still open", "Sessions not closed yet, so their hidden calls aren't known.", True)))
+        _th("Cost", "Estimated cost at API prices, hidden background calls included.", True),
+        _th("Hidden calls", "The part of the cost that is hidden background calls.", True),
+        _th("Still open", "Sessions not closed yet, so their hidden calls aren't added yet.", True)))
     for dd, lab in zip(reversed(s["days"]), reversed(labels)):
         p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(lab), _td(money(dd["total"])),
                                                     _td(money(dd["not_logged"]) if dd["not_logged"] else ""),

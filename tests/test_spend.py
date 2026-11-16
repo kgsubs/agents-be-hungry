@@ -187,7 +187,7 @@ class SpendTests(unittest.TestCase):
         _, s = run_summary(self.fx.root)
         split = {t["key"]: t for t in s["token_types"]}
         self.assertEqual([t["key"] for t in s["token_types"]],
-                         ["output", "cache_read", "cache_write_5m", "cache_write_1h", "input", "searches"])
+                         ["output", "cache_read", "cache_write_5m", "cache_write_1h", "input", "searches", "hidden"])
         self.assertAlmostEqual(split["output"]["cost"], 20.0)
         self.assertAlmostEqual(split["cache_read"]["cost"], 0.2)
         self.assertAlmostEqual(split["cache_write_5m"]["cost"], 5.0)
@@ -328,13 +328,74 @@ class SpendTests(unittest.TestCase):
                                             cost_state(3.50, {"claude-sonnet-5-5": 3.00, "claude-haiku-5-5": 0.50})])
         self.fx.write("proj/open.jsonl", [line("m2", "r2", inp=1_000_000, ts=today_at(11))])
         _, s = run_summary(self.fx.root)
-        self.assertAlmostEqual(s["total"], 4.00, places=6)                  # headline stays logged usage
+        self.assertAlmostEqual(s["logged_total"], 4.00, places=6)
+        self.assertAlmostEqual(s["total"], 5.50, places=6)                  # logged 4.00 + hidden 1.50
         self.assertAlmostEqual(s["quality"]["not_logged"], 1.50, places=6)
         self.assertEqual(s["quality"]["open_sessions"], 1)
         self.assertAlmostEqual(model(s, "claude-haiku-5-5")["not_logged"], 0.50, places=6)
         rows = {r["session"]: r for r in s["sessions"]}
         self.assertAlmostEqual(rows["closed"]["not_logged"], 1.50, places=6)
         self.assertIsNone(rows["open"]["not_logged"])
+
+    def test_total_is_logged_plus_hidden_for_closed_sessions(self):
+        self.fx.write("proj/closed.jsonl", [line("m1", "r1", inp=1_000_000, ts=today_at(10)),
+                                            cost_state(3.50, {"claude-sonnet-5-5": 3.00, "claude-haiku-5-5": 0.50})])
+        _, s = run_summary(self.fx.root)
+        self.assertAlmostEqual(s["logged_total"], 2.00, places=6)
+        self.assertAlmostEqual(s["not_logged"], 1.50, places=6)
+        self.assertAlmostEqual(s["total"], 3.50, places=6)                  # equals Claude Code's own tally
+        self.assertAlmostEqual(s["total"], s["logged_total"] + s["not_logged"], places=6)
+        self.assertAlmostEqual(day(s, date.today())["total"], 3.50, places=6)
+        self.assertAlmostEqual(s["average"], 3.50 / 7, places=6)
+        self.assertAlmostEqual(s["sessions"][0]["total"], 3.50, places=6)
+        self.assertAlmostEqual(s["sessions"][0]["logged"], 2.00, places=6)
+        self.assertAlmostEqual(s["projects"][0]["cost"], 3.50, places=6)
+        self.assertAlmostEqual(model(s, "claude-sonnet-5-5")["cost"], 3.00, places=6)
+        self.assertAlmostEqual(model(s, "claude-haiku-5-5")["cost"], 0.50, places=6)
+        self.assertAlmostEqual(model(s, "claude-haiku-5-5")["window_cost"], 0.50, places=6)
+        # the rows of "Where the money went" add up to the total, hidden row included
+        self.assertAlmostEqual(sum(t["cost"] for t in s["token_types"]), s["total"], places=6)
+        self.assertAlmostEqual(sum(t["percent"] for t in s["token_types"]), 100.0, places=6)
+        hidden = next(t for t in s["token_types"] if t["key"] == "hidden")
+        self.assertEqual(hidden["label"], "Hidden background calls")
+        self.assertAlmostEqual(hidden["cost"], 1.50, places=6)
+        self.assertIn("Hidden background calls", spend.render_html(s))
+        text = spend.render_text(s)
+        self.assertTrue(text.splitlines()[0].endswith("$3.50"))
+        self.assertIn("Includes $1.50 of hidden background calls (logged $2.00)", text)
+        self.assertIn("Includes $1.50 of hidden background calls (logged $2.00)", spend.render_html(s))
+        self.assertNotIn("still open", text)
+
+    def test_yesterday_and_change_include_hidden(self):
+        yday = today_at(12) - timedelta(days=1)
+        self.fx.write("proj/old.jsonl", [line("m1", "r1", inp=1_000_000, ts=yday),
+                                         cost_state(5.00, {"claude-sonnet-5-5": 5.00})])
+        self.fx.write("proj/new.jsonl", [line("m2", "r2", inp=1_000_000)])
+        _, s = run_summary(self.fx.root)
+        self.assertAlmostEqual(s["yesterday"], 5.00, places=6)
+        self.assertAlmostEqual(s["change"], 2.00 - 5.00, places=6)
+
+    def test_open_session_adds_nothing(self):
+        self.fx.write("proj/open.jsonl", [line("m1", "r1", inp=1_000_000)])
+        _, s = run_summary(self.fx.root)
+        self.assertAlmostEqual(s["total"], 2.00, places=6)
+        self.assertAlmostEqual(s["not_logged"], 0.0, places=6)
+        self.assertEqual(s["open_sessions"], 1)
+        self.assertIsNone(s["sessions"][0]["not_logged"])
+        self.assertAlmostEqual(s["sessions"][0]["total"], 2.00, places=6)
+        line1 = "1 session is still open; its background calls get added when it closes."
+        self.assertIn(line1, spend.render_text(s))
+        self.assertIn(line1, spend.render_html(s))
+        self.assertNotIn("Includes", spend.render_text(s))
+
+    def test_chart_bar_label_is_full_total(self):
+        self.fx.write("proj/closed.jsonl", [line("m1", "r1", inp=1_000_000, ts=today_at(10)),
+                                            cost_state(3.50, {"claude-sonnet-5-5": 3.50})])
+        _, s = run_summary(self.fx.root)
+        page = spend.render_html(s)
+        self.assertIn('class="total" x=', page)
+        self.assertRegex(page, r'class="total"[^>]*>\$3\.50</text>')
+        self.assertIn('class="gapfill"', page)                       # striped segment stays inside the bar
 
     def test_json_shape(self):
         self.fx.write("proj/s.jsonl", [user("hi"), line("m1", "r1", inp=1000)])
@@ -346,7 +407,8 @@ class SpendTests(unittest.TestCase):
         self.assertEqual(code, 0)
         j = json.loads(buf.getvalue())
         for k in ("date", "generated", "estimate_line", "total", "yesterday", "change", "average", "token_types",
-                  "models", "sessions", "subagents", "projects", "hours", "days", "quality", "prices_warning", "tldr"):
+                  "models", "sessions", "subagents", "projects", "hours", "days", "quality", "prices_warning", "tldr",
+                  "logged_total", "not_logged", "open_sessions"):
             self.assertIn(k, j)
         self.assertEqual(len(j["hours"]), 24)
         self.assertEqual(len(j["days"]), 7)
