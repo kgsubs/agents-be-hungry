@@ -36,7 +36,7 @@ Run from the skill folder:
     python3 spend.py --out PATH           write the dashboard to PATH
     python3 spend.py --no-open            do not open a browser
 
-The terminal output and the page show the same sections: the header (total, change from the day before, the average over the history, last update), where the money went (output, cache reads, 5-minute and 1-hour cache writes, uncached input, web searches), every model seen in the history with this day's tokens by type, the 10 biggest sessions, the 15 biggest subagents, spend by project, by hour, the last N days, and a data quality panel.
+`page.css` and `page.js` are the page's shared styles and navigation script; keep them next to `spend.py`, which writes them into each page. The terminal output and the page show the same sections: the header (total, change from the day before, the average over the history, last update), where the money went (output, cache reads, 5-minute and 1-hour cache writes, uncached input, web searches), every model seen in the history with this day's tokens by type, the 10 biggest sessions, the 15 biggest subagents, spend by project, by hour, the last N days, and a data quality panel.
 
 On Windows use `python` or `py` in place of `python3`. The file path of the dashboard is always printed; if no browser can be opened, the script carries on. Exit code is 0 on success and non-zero with a message on bad flags. If `CLAUDE_CONFIG_DIR` is set, transcripts are read from there instead of `~/.claude`.
 
@@ -44,7 +44,7 @@ On Windows use `python` or `py` in place of `python3`. The file path of the dash
 
 When Claude can make artifacts (the Artifact tool is available in the session), the skill publishes the page to your Claude account as a private artifact and keeps one link that updates:
 
-1. `python3 spend.py --artifact` writes `artifact.html` in the skill folder: one self-contained page, no scripts, no outside fonts, no auto-refresh, light mode only.
+1. `python3 spend.py --artifact` writes `artifact.html` in the skill folder: one self-contained page (the styles in `page.css` and the small navigation script in `page.js` are written into it), no outside files or fonts, no auto-refresh, light mode only. It has a sidebar with a link to each section (a Sections menu on phones) and shows the same numbers as the terminal.
 2. The first time, Claude publishes it as a new artifact and saves its URL to `.artifact-url` in the skill folder.
 3. Each later time you ask, Claude rewrites `artifact.html` and republishes it to the saved URL, so the same link shows the latest numbers.
 4. If that artifact was deleted or the publish is refused, Claude publishes a new one and saves the new URL.

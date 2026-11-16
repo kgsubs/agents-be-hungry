@@ -1263,86 +1263,31 @@ def counted_rows(q):
 
 # ---------------------------------------------------------------- html
 
-CSS = """
-:root{--bg:#f3f7f5;--card:#fff;--ink:#267e5c;--text2:#4f6b5f;--mute:#7da595;--line:#dbe9e2;--rule:#e8f0ec;
---accent:#93bfae;--hl:rgba(176,217,200,.5);--band:#f3f9f6;--s1:#267e5c;--s2:#b0d9c8;--s3:#7da595;--s4:#a9b0ad;--s5:#dcebe4;
---warn:#8a5200;--gap:#93bfae;color-scheme:light}
-*{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%;color-scheme:light}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Arial,sans-serif}
-main{max-width:1020px;margin:0 auto;padding:32px 16px 64px}
-h1,h2,h3{font-weight:normal;margin:0}
-h1,h2{font-size:12px;line-height:16px;letter-spacing:.08em;text-transform:uppercase;color:var(--text2)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;margin:0 0 16px;
-box-shadow:0 1px 2px rgba(38,126,92,.05);min-width:0}
-.card h2{margin:0 0 4px}
-.lead{color:var(--text2);margin:0 0 16px;font-size:14px}
-.big{font-size:64px;line-height:1.1;margin:8px 0 16px;letter-spacing:-.01em}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px 24px;margin:0 0 16px;padding-top:16px;border-top:1px solid var(--rule)}
-.stat span{display:block;color:var(--text2);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
-.stat b{display:block;font-weight:normal;font-size:24px;line-height:32px;font-variant-numeric:tabular-nums}
-.note{color:var(--text2);font-size:13px;margin:8px 0 0}
-.warn{color:var(--warn)}
-.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
-table{width:100%;border-collapse:collapse;font-size:14px}
-th,td{text-align:left;padding:12px 12px 12px 0;border-bottom:1px solid var(--rule);vertical-align:middle}
-th:last-child,td:last-child{padding-right:0}
-tr:last-child td{border-bottom:0}
-th{font-weight:normal;color:var(--text2);font-size:11px;letter-spacing:.06em;text-transform:uppercase;line-height:14px;vertical-align:bottom;
-padding-top:8px;padding-bottom:8px;border-bottom:1px solid var(--line)}
-td.r{white-space:nowrap}td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
-td.nw,th{white-space:nowrap}
-td.tot{font-weight:bold}
-td.p{min-width:160px}
-.trunc{display:block;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-table.narrow{width:auto;min-width:50%}
-tbody tr:hover td{background:var(--hl)}
-.dim{color:var(--text2)}.small{font-size:13px;padding-left:20px;line-height:20px}
-.tag{display:inline-block;border:1px solid var(--accent);border-radius:99px;padding:0 8px;font-size:11px;line-height:18px;color:var(--text2);margin-left:8px;white-space:nowrap}
-.tag.run{background:var(--hl);border-color:var(--accent);color:var(--ink)}
-.tag.unp{border-color:var(--warn);color:var(--warn)}
-.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:8px;vertical-align:-1px}
-.legend{display:flex;flex-wrap:wrap;gap:8px 24px;font-size:13px;color:var(--text2);margin:0 0 16px}
-.split{display:flex;height:16px;border-radius:8px;overflow:hidden;margin:8px 0 16px;background:var(--s5)}
-.split i{display:block;height:100%;border-right:2px solid var(--card)}
-.split i:last-child{border-right:0}
-.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:16px}
-.tile{border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
-.tile span{display:block;color:var(--text2);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
-.tile b{display:block;font-weight:normal;font-size:24px;line-height:32px;margin-top:4px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-svg{width:100%;height:auto;display:block}
-.chart svg{min-width:760px}
-svg text{fill:var(--text2);font:13px Arial,sans-serif}
-svg .total{fill:var(--ink)}svg .sm{font-size:11px}
-th[title],dt[title],.stat[title],.tile[title]{cursor:help}
-.s1{fill:var(--s1);background:var(--s1)}.s2{fill:var(--s2);background:var(--s2)}
-.s3{fill:var(--s3);background:var(--s3)}.s4{fill:var(--s4);background:var(--s4)}
-.s5{fill:var(--s5);background:var(--s5)}
-.sw.s5{box-shadow:inset 0 0 0 1px var(--accent)}
-.gapfill{fill:url(#hatch);stroke:var(--gap);stroke-width:1}
-.gapsw{background:repeating-linear-gradient(45deg,var(--gap) 0 2px,#fff 2px 5px);box-shadow:inset 0 0 0 1px var(--gap)}
-.tl{padding-top:16px;margin-top:16px;border-top:1px solid var(--rule)}
-.tl:first-of-type{margin-top:8px}
-.tl h3{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text2);margin:0 0 8px}
-.tl p,.tl ul,.tl ol{margin:0;padding-left:0;font-size:15px}
-.tl ul,.tl ol{list-style:none;counter-reset:n}
-.tl li{display:flex;gap:16px;justify-content:space-between;align-items:flex-start;padding:4px 0}
-.tl ul li{display:list-item;padding-left:16px;position:relative}
-.tl ul li:before{content:"";position:absolute;left:0;top:11px;width:6px;height:6px;border-radius:50%;background:var(--accent)}
-.tl ol li{counter-increment:n;padding:8px 0;border-bottom:1px solid var(--rule)}
-.tl ol li:last-child{border-bottom:0}
-.tl ol li span:first-child:before{content:counter(n) ". ";color:var(--text2)}
-.tl .tag{margin-left:0;flex:none;cursor:help}
-dl{margin:0;font-size:14px}
-.kv{display:grid;grid-template-columns:240px 1fr;gap:16px;padding:12px 0;border-bottom:1px solid var(--rule)}
-.kv:first-child{padding-top:0}.kv:last-child{border-bottom:0;padding-bottom:0}
-dt{color:var(--text2)}dd{margin:0;overflow-wrap:anywhere}
-.privacy{background:var(--band)}
-.privacy p{margin:0;font-size:13px;color:var(--text2)}
-@media (max-width:640px){main{padding:16px 16px 48px}.card{padding:16px;border-radius:12px}.big{font-size:48px}
-.tiles{grid-template-columns:repeat(2,1fr);gap:8px}.tile{padding:12px}.tile b{font-size:20px}
-.kv{grid-template-columns:1fr;gap:4px}.stat b{font-size:20px}}
-"""
+def _asset(name):
+    """Text of a shared page file (page.css, page.js) next to spend.py."""
+    with open(os.path.join(HERE, name), encoding="utf-8") as f:
+        return f.read()
+
+
+# Journey links: section id, label, icon. The page is one document, so the CSS and
+# the navigation script are inlined from page.css and page.js.
+SECTIONS = (("overview", "Overview", "compass"), ("summary", "TLDR", "check"),
+            ("breakdown", "Cost breakdown", "file"), ("models", "Models & projects", "grid"),
+            ("sessions", "Sessions & agents", "clients"), ("history", "Over time", "clock"),
+            ("method", "How counted", "book"))
+SPRITE = (
+    '<svg class="sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>'
+    '<symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m16 8-3 5-5 3 3-5z"/></symbol>'
+    '<symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v5h4M9 12h6M9 16h4"/></symbol>'
+    '<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>'
+    '<rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>'
+    '<symbol id="i-book" viewBox="0 0 24 24"><path d="M12 5c-3-2-6-2-10-1v15c4-1 7-1 10 1 3-2 6-2 10-1V4c-4-1-7-1-10 1zm0 0v15"/></symbol>'
+    '<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>'
+    '<symbol id="i-clients" viewBox="0 0 24 24"><circle cx="8" cy="7" r="3"/><path d="M2 20v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14c3 1 4 3 4 6"/></symbol>'
+    '<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></symbol>'
+    '<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>'
+    '<symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>'
+    '</defs></svg>')
 
 
 def _series_class(model, series):
@@ -1360,19 +1305,21 @@ def _stack(by_model, series):
     return out
 
 
-def stacked_chart(labels, stacks, totals, extra=None, label_every=1, show_totals=True, w=960, h=260):
+def stacked_chart(labels, stacks, totals, extra=None, label_every=1, show_totals=True, w=960, h=260,
+                  pid="hatch", title="stacked bar chart"):
     """Vertical stacked bars. stacks: per bar [(class, name, value)]. extra: per bar
     value (hidden background calls) drawn hatched on top, inside the bar. totals
-    are the full bar heights, extra included."""
+    are the full bar heights, extra included. pid is the id of the hatch pattern,
+    unique per chart on the page."""
     pad_b, pad_t = 28, 28
     n = len(labels)
     mx = max(totals) if totals and max(totals) > 0 else 1.0
     slot = w / max(n, 1)
     bw = min(slot * 0.62, 64)
     ph = h - pad_b - pad_t
-    p = ['<svg viewBox="0 0 {} {}" role="img" aria-label="stacked bar chart">'.format(w, h),
-         '<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
-         '<rect width="2" height="6" fill="var(--gap)"/></pattern></defs>',
+    p = ['<svg viewBox="0 0 {} {}" role="img" aria-label="{}">'.format(w, h, html.escape(title)),
+         '<defs><pattern id="{}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+         '<rect width="2" height="6" fill="var(--gap)"/></pattern></defs>'.format(html.escape(pid)),
          '<line x1="0" y1="{0}" x2="{1}" y2="{0}" stroke="var(--line)"/>'.format(h - pad_b, w)]
     for i in range(n):
         x = i * slot + (slot - bw) / 2
@@ -1388,8 +1335,8 @@ def stacked_chart(labels, stacks, totals, extra=None, label_every=1, show_totals
         if extra and extra[i] > 0:
             bh = ph * extra[i] / mx
             y -= bh
-            p.append('<rect class="gapfill" x="{:.1f}" y="{:.1f}" width="{:.1f}" height="{:.1f}" rx="2"><title>{}: hidden background calls {}</title></rect>'.format(
-                x, y, bw, max(bh - 1, 0.5), html.escape(str(labels[i])), money(extra[i])))
+            p.append('<rect class="gapfill" fill="url(#{})" x="{:.1f}" y="{:.1f}" width="{:.1f}" height="{:.1f}" rx="2"><title>{}: hidden background calls {}</title></rect>'.format(
+                html.escape(pid), x, y, bw, max(bh - 1, 0.5), html.escape(str(labels[i])), money(extra[i])))
         if totals[i] > 0 and (show_totals or totals[i] >= 0.25 * max(totals)):
             p.append('<text class="total{}" x="{:.1f}" y="{:.1f}" text-anchor="middle">{}</text>'.format(
                 "" if show_totals else " sm", x + bw / 2, y - 8, money(totals[i])))
@@ -1421,7 +1368,17 @@ def _trunc(text):
 
 def _th(label, tip, right=False):
     """Table header with its one-line plain explanation as a tooltip."""
-    return '<th{} title="{}">{}</th>'.format(' class="r"' if right else "", html.escape(tip), html.escape(label))
+    return '<th scope="col"{} title="{}">{}</th>'.format(' class="r"' if right else "", html.escape(tip), html.escape(label))
+
+
+def _table_open(label, cls="", style=""):
+    """Opens a table inside its own keyboard-scrollable region; close with '</tbody></table></div>'."""
+    return '<div class="scroll table-scroll"{} tabindex="0" role="region" aria-label="{}"><table{}>'.format(
+        ' style="{}"'.format(style) if style else "", html.escape(label), ' class="{}"'.format(cls) if cls else "")
+
+
+def _chart_open(label):
+    return '<div class="scroll chart" tabindex="0" role="region" aria-label="{}">'.format(html.escape(label))
 
 
 def _tok_td(n, cls="r"):
@@ -1448,17 +1405,31 @@ def render_html(s, refresh=False, warning=None):
     series = s["chart_series"]
     target = s["date"]
     vs = vs_word(s)
-    p = ['<!doctype html><html lang="en"><head><meta charset="utf-8">',
+    p = ['<!doctype html>\n<html lang="en"><head><meta charset="utf-8">',
          '<meta name="viewport" content="width=device-width,initial-scale=1">',
          '<meta name="color-scheme" content="light">']
     if refresh:
         p.append('<meta http-equiv="refresh" content="60">')
-    p.append("<title>{}</title><style>{}</style></head><body><main>".format(PAGE_TITLE, CSS))
+    p.append("<title>{}</title><style>\n{}</style></head><body>".format(PAGE_TITLE, _asset("page.css")))
+    p.append(SPRITE)
+    p.append('<a class="skip" href="#main">Skip to content</a>')
 
-    # header
-    p.append('<div class="card"><h1>Claude Code spend: {}</h1>'.format(esc(day_name(target))))
-    p.append('<div class="big" title="Estimated cost at API prices">{}</div>'.format(money(s["total"])))
-    p.append('<div class="stats">')
+    # sidebar: brand, the Sections button for phones, and one link per section
+    p.append('<aside class="sidebar" aria-label="Page navigation"><a class="brand" href="#overview">{}</a>'.format(esc(PAGE_TITLE)))
+    p.append('<button class="menu-toggle" type="button" aria-expanded="false" aria-controls="journey-nav">'
+             '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-menu"/></svg><span>Sections</span></button>')
+    p.append('<span class="mobile-location">{}</span>'.format(esc(SECTIONS[0][1])))
+    p.append('<nav class="journey-nav" id="journey-nav" aria-label="Page sections">{}</nav></aside>'.format("".join(
+        '<a class="journey-link" href="#{}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-{}"/></svg>'
+        '<span class="nav-label">{}</span><span class="location-dot"></span></a>'.format(sid, icon, esc(label))
+        for sid, label, icon in SECTIONS)))
+    p.append('<main class="page" id="main"><div class="content">')
+
+    # hero
+    p.append('<header id="overview" class="hero" aria-labelledby="page-title"><div class="hero-grid"><div>'
+             '<h1 id="page-title">Claude Code spend</h1><p class="date">{}</p><p class="intro">{}</p></div>'
+             '<div class="hero-metric"><div class="value">{}</div><span class="label">Estimated cost at API prices</span></div></div>'
+             '<div class="stats">'.format(esc(day_name(target)), esc(ESTIMATE_LINE), money(s["total"])))
 
     def stat(label, value, tip):
         p.append('<div class="stat" title="{}"><span>{}</span><b>{}</b></div>'.format(esc(tip), esc(label), esc(value)))
@@ -1466,28 +1437,29 @@ def render_html(s, refresh=False, warning=None):
          "{}: {}.".format(vs[:1].upper() + vs[1:], money(s["yesterday"])))
     stat("Daily average", money(s["average"]), "Average cost per day over the last {}.".format(plural(s["days_shown"], "day")))
     stat("Updated", hhmm(s["generated"]), "When this page was made.")
-    p.append('</div>')
-    p.append('<p class="note">{}</p>'.format(esc(ESTIMATE_LINE)))
-    if q["not_logged"]:
-        p.append('<p class="note">Includes {} of hidden background calls (logged {}).</p>'.format(
-            esc(money(q["not_logged"])), esc(money(s["logged_total"]))))
-    if q["not_logged"] or q["open_sessions"]:
-        p.append('<p class="note">{}</p>'.format(esc(HIDDEN_LINE)))
-    if q["open_sessions"]:
-        p.append('<p class="note">{}</p>'.format(esc(open_text(q["open_sessions"]))))
+    p.append('</div></header>')
     if warning:
         p.append('<p class="note warn">Warning: {}</p>'.format(esc(warning)))
-    p.append('</div>')
+    if q["open_sessions"]:
+        p.append('<p class="status-line"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock"/></svg>'
+                 '<span>{}</span></p>'.format(esc(open_text(q["open_sessions"]))))
+    if q["not_logged"] or q["open_sessions"]:
+        p.append('<details class="estimate-details"><summary>How this estimate works</summary><div class="detail-body">')
+        if q["not_logged"]:
+            p.append('<p>Includes {} of hidden background calls (logged {}).</p>'.format(
+                esc(money(q["not_logged"])), esc(money(s["logged_total"]))))
+        p.append('<p>{}</p></div></details>'.format(esc(HIDDEN_LINE)))
 
     # tldr
     t = s["tldr"]
-    p.append('<div class="card tldr"><h2 title="Too long, didn\'t read: the short version.">TLDR</h2>')
+    p.append('<section class="section" id="summary"><article class="block tldr">'
+             '<h2 title="Too long, didn\'t read: the short version.">TLDR</h2>')
     if t["empty"]:
-        p.append('<p class="lead" style="margin:8px 0 0">{}</p>'.format(esc(t["meaning"])))
+        p.append('<p class="lead">{}</p>'.format(esc(t["meaning"])))
     else:
         p.append('<div class="tl"><h3>What happened</h3><ul>{}</ul></div>'.format(
             "".join("<li>{}</li>".format(esc(f)) for f in t["findings"])))
-        p.append('<div class="tl"><h3>What it means</h3><p>{}</p></div>'.format(esc(t["meaning"])))
+        p.append('<div class="tl insight"><h3>What it means</h3><p>{}</p></div>'.format(esc(t["meaning"])))
         p.append('<div class="tl"><h3 title="Hover a figure to see how it was worked out.">{}</h3>'.format(
             tips_heading(len(t["recommendations"]))))
         if t["recommendations"]:
@@ -1500,11 +1472,11 @@ def render_html(s, refresh=False, warning=None):
         else:
             p.append("<p>Nothing to suggest for this day.</p>")
         p.append("</div>")
-    p.append('</div>')
+    p.append('</article></section>')
 
     # where the money went
-    p.append('<div class="card"><h2>Where the money went</h2><p class="lead">What the money paid for. '
-             'Counted in tokens (word pieces). One token is about 3/4 of a word.</p>')
+    p.append('<section class="section" id="breakdown"><article class="block"><h2>Where the money went</h2>'
+             '<p class="lead">What the money paid for. Counted in tokens (word pieces). One token is about 3/4 of a word.</p>')
     ranked = sorted(s["token_types"], key=lambda t: -t["cost"])
     rank = {t["key"]: min(i + 1, 5) for i, t in enumerate(ranked)}
     if s["total"] > 0:
@@ -1514,7 +1486,8 @@ def render_html(s, refresh=False, warning=None):
                 p.append('<i class="s{}" style="width:{:.3f}%" title="{}: {} ({:.1f}%)"></i>'.format(
                     rank[t["key"]], t["percent"], esc(t["label"]), money(t["cost"]), t["percent"]))
         p.append('</div>')
-    p.append('<div class="scroll"><table><thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
+    p.append('{}<thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
+        _table_open("Where the money went table"),
         _th("What", "What the money paid for."),
         _th("Tokens", TOKEN_LINE, True),
         _th("Cost", "Estimated cost at API prices.", True),
@@ -1526,23 +1499,24 @@ def render_html(s, refresh=False, warning=None):
         p.append('<tr><td class="p">{}{}<div class="dim small">{}</div></td>{}{}{}</tr>'.format(
             sw, _nb(t["label"]), esc(t["explain"]), cell,
             _td(money(t["cost"])), _td("{:.1f}%".format(t["percent"]))))
-    p.append('</tbody></table></div></div>')
+    p.append('</tbody></table></div></article>')
 
     # token tiles
     tk = {t["key"]: t["tokens"] for t in s["token_types"] if t["tokens"] is not None}
-    p.append('<div class="card"><h2 title="{}">Tokens used</h2><div class="tiles">'.format(esc(TOKEN_LINE)))
+    p.append('<article class="block"><h3 title="{}">Tokens used</h3><div class="tiles">'.format(esc(TOKEN_LINE)))
     for lab, val, tip in (("New text sent", tk["input"], "Text sent to Claude that wasn't saved to memory."),
                           ("Claude's replies", tk["output"], "Everything Claude wrote."),
                           ("Saved to memory", tk["cache_write_5m"] + tk["cache_write_1h"], "Chat saved so Claude can re-read it cheaply (5 min and 1 hour)."),
                           ("Re-read", tk["cache_read"], "Chat Claude read again from memory on each turn.")):
         p.append('<div class="tile" title="{}"><span>{}</span><b title="{} tokens">{}</b></div>'.format(
             esc(tip), esc(lab), num(val), tok_short(val)))
-    p.append('</div></div>')
+    p.append('</div></article></section>')
 
     # by model
-    p.append('<div class="card"><h2>By model</h2><p class="lead">Each Claude model used in the last {}. '
+    p.append('<section class="section" id="models"><article class="block"><h2>By model</h2>'
+             '<p class="lead">Each Claude model used in the last {}. '
              'Token counts are for this day only. Costs include hidden background calls.</p>'.format(plural(s["days_shown"], "day")))
-    p.append('<div class="scroll"><table><thead><tr>{}</tr></thead><tbody>'.format("".join([
+    p.append('{}<thead><tr>{}</tr></thead><tbody>'.format(_table_open("By model table", "wide-table"), "".join([
         _th("Model", "The Claude model. Hover a name for its full id."),
         _th("Cost", "Cost on this day, hidden background calls included.", True),
         _th("Answers", "How many times this model answered.", True),
@@ -1566,14 +1540,28 @@ def render_html(s, refresh=False, warning=None):
         p.append('<tr><td colspan="10" class="dim">Nothing used in these days.</td></tr>')
     p.append('</tbody></table></div><p class="note">* Included in the cost columns. Calls Claude Code makes behind the scenes and doesn\'t save in its logs, '
              'from its own running total, for closed sessions. A model marked "no price" is missing from the price list '
-             '(prices.json) and is left out of every total.</p></div>')
+             '(prices.json) and is left out of every total.</p></article>')
+
+    # projects
+    p.append('<article class="block"><h3>By project</h3><p class="lead">Cost by the folder Claude Code worked in.</p>')
+    p.append('{}<thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
+        _table_open("By project table"),
+        _th("Folder", "The project folder Claude Code was working in."),
+        _th("Sessions", "Chats in this folder on this day.", True),
+        _th("Helpers", "Helper agents started from those chats.", True),
+        _th("Cost", "Estimated cost at API prices, hidden background calls included.", True)))
+    for r in s["projects"]:
+        p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(r["project"]), _td(num(r["sessions"])), _td(num(r["subagents"])), _td(money(r["cost"]), "r tot")))
+    if not s["projects"]:
+        p.append('<tr><td colspan="4" class="dim">No activity on this day.</td></tr>')
+    p.append('</tbody></table></div></article></section>')
 
     # sessions
     shown = min(len(s["sessions"]), TOP_SESSIONS)
-    p.append('<div class="card"><h2 title="A session is one Claude Code chat.">Biggest sessions</h2>'
+    p.append('<section class="section" id="sessions"><article class="block"><h2 title="A session is one Claude Code chat.">Biggest sessions</h2>'
              '<p class="lead">Costliest first, helper agents included. Showing {}.</p>'.format(
                  plural(shown, "session") if shown == len(s["sessions"]) else "{} of {}".format(shown, plural(len(s["sessions"]), "session"))))
-    p.append('<div class="scroll"><table><thead><tr>{}</tr></thead><tbody>'.format("".join([
+    p.append('{}<thead><tr>{}</tr></thead><tbody>'.format(_table_open("Biggest sessions table", "wide-table"), "".join([
         _th("Started", "When the session began, your local time."),
         _th("Project", "The folder Claude Code was working in."),
         _th("First message", "The first thing you typed in the session. Hover to see it all."),
@@ -1594,15 +1582,15 @@ def render_html(s, refresh=False, warning=None):
             _td(money(r["total"]), "r tot"), _td(nl)))
     if not s["sessions"]:
         p.append('<tr><td colspan="9" class="dim">No activity on this day.</td></tr>')
-    p.append('</tbody></table></div></div>')
+    p.append('</tbody></table></div></article>')
 
     # subagents
     shown = min(len(s["subagents"]), TOP_SUBAGENTS)
-    p.append('<div class="card"><h2 title="Helper agents (subagents) are extra Claude agents a session starts to do a side job.">'
-             'Biggest helper agents</h2><p class="lead">Extra agents a session starts for a side job. Costliest first, '
+    p.append('<article class="block"><h3 title="Helper agents (subagents) are extra Claude agents a session starts to do a side job.">'
+             'Biggest helper agents</h3><p class="lead">Extra agents a session starts for a side job. Costliest first, '
              'from all sessions, priced by the model that did the work. Showing {}.</p>'.format(
                  plural(shown, "agent") if shown == len(s["subagents"]) else "{} of {}".format(shown, plural(len(s["subagents"]), "agent"))))
-    p.append('<div class="scroll"><table><thead><tr>{}</tr></thead><tbody>'.format("".join([
+    p.append('{}<thead><tr>{}</tr></thead><tbody>'.format(_table_open("Biggest helper agents table", "wide-table"), "".join([
         _th("Name", "The agent's name, or its first instruction when it has none."),
         _th("Model", "The model that actually did the work."),
         _th("Started from", "The first message of the session that started it."),
@@ -1630,28 +1618,7 @@ def render_html(s, refresh=False, warning=None):
                      '<span class="tag run" style="margin-left:0">running</span>' if r["status"] == "running" else esc(status)))
     if not s["subagents"]:
         p.append('<tr><td colspan="9" class="dim">No helper agents on this day.</td></tr>')
-    p.append('</tbody></table></div></div>')
-
-    # projects
-    p.append('<div class="card"><h2>By project</h2><p class="lead">Cost by the folder Claude Code worked in.</p>')
-    p.append('<div class="scroll"><table><thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
-        _th("Folder", "The project folder Claude Code was working in."),
-        _th("Sessions", "Chats in this folder on this day.", True),
-        _th("Helpers", "Helper agents started from those chats.", True),
-        _th("Cost", "Estimated cost at API prices, hidden background calls included.", True)))
-    for r in s["projects"]:
-        p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(r["project"]), _td(num(r["sessions"])), _td(num(r["subagents"])), _td(money(r["cost"]), "r tot")))
-    if not s["projects"]:
-        p.append('<tr><td colspan="4" class="dim">No activity on this day.</td></tr>')
-    p.append('</tbody></table></div></div>')
-
-    # hours
-    hstacks = [_stack(h["by_model"], series) for h in s["hours"]]
-    has_other = any(c == "s4" for st in hstacks for c, _, _ in st)
-    p.append('<div class="card"><h2>By hour</h2><p class="lead">Your local time. Hover a bar to see each model\'s cost. Hidden background calls aren\'t tied to an hour, so they aren\'t here.</p>{}<div class="scroll chart">{}</div></div>'.format(
-        legend(series, has_other),
-        stacked_chart([hour_name(h["hour"]).replace(" am", "a").replace(" pm", "p") for h in s["hours"]], hstacks,
-                      [h["total"] for h in s["hours"]], label_every=1, show_totals=False)))
+    p.append('</tbody></table></div></article></section>')
 
     # days
     dstacks = [_stack(dd["by_model"], series) for dd in s["days"]]
@@ -1659,12 +1626,15 @@ def render_html(s, refresh=False, warning=None):
     gaps = [dd["not_logged"] for dd in s["days"]]
     n = len(s["days"])
     labels = [datetime.strptime(dd["date"], "%Y-%m-%d").strftime("%a %d" if n <= 14 else "%b %d").replace(" 0", " ") for dd in s["days"]]
-    p.append('<div class="card"><h2>Last {} days</h2><p class="lead">Each bar shows the day\'s full cost.{}</p>{}<div class="scroll chart">{}</div>'.format(
-        n, " The striped part is hidden background calls." if any(g > 0 for g in gaps) else "",
-        legend(series, has_other, any(g > 0 for g in gaps)),
+    heading = "Last {} days".format(n)
+    p.append('<section class="section" id="history"><article class="block"><h2>{}</h2><p class="lead">Each bar shows the day\'s full cost.{}</p>{}{}{}</div>'.format(
+        heading, " The striped part is hidden background calls." if any(g > 0 for g in gaps) else "",
+        legend(series, has_other, any(g > 0 for g in gaps)), _chart_open(heading + " chart"),
         stacked_chart(labels, dstacks, [dd["total"] for dd in s["days"]], extra=gaps,
-                      label_every=1 if n <= 14 else max(1, n // 10), show_totals=n <= 14)))
-    p.append('<div class="scroll" style="margin-top:16px"><table class="narrow"><thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
+                      label_every=1 if n <= 14 else max(1, n // 10), show_totals=n <= 14,
+                      pid="hatch-week", title=heading + " estimated API cost by model")))
+    p.append('{}<thead><tr>{}{}{}{}</tr></thead><tbody>'.format(
+        _table_open("Daily cost table", "narrow", "margin-top:24px"),
         _th("Day", "Newest first."),
         _th("Cost", "Estimated cost at API prices, hidden background calls included.", True),
         _th("Hidden calls", "The part of the cost that is hidden background calls.", True),
@@ -1673,17 +1643,30 @@ def render_html(s, refresh=False, warning=None):
         p.append('<tr><td class="nw">{}</td>{}{}{}</tr>'.format(esc(lab), _td(money(dd["total"])),
                                                     _td(money(dd["not_logged"]) if dd["not_logged"] else ""),
                                                     _td(num(dd["open_sessions"]) if dd["open_sessions"] else "")))
-    p.append('</tbody></table></div></div>')
+    p.append('</tbody></table></div></article>')
+
+    # hours
+    hstacks = [_stack(h["by_model"], series) for h in s["hours"]]
+    has_other = any(c == "s4" for st in hstacks for c, _, _ in st)
+    p.append('<article class="block"><h3>By hour</h3><p class="lead">Your local time. Hover a bar to see each model\'s cost. '
+             'Hidden background calls aren\'t tied to an hour, so they aren\'t here.</p>{}{}{}</div></article></section>'.format(
+        legend(series, has_other), _chart_open("By hour chart"),
+        stacked_chart([hour_name(h["hour"]).replace(" am", "a").replace(" pm", "p") for h in s["hours"]], hstacks,
+                      [h["total"] for h in s["hours"]], label_every=1, show_totals=False,
+                      pid="hatch-hour", title="By hour estimated API cost by model")))
 
     # how this was counted
-    p.append('<div class="card"><h2>How this was counted</h2><p class="lead">What was read, and what couldn\'t be counted, on this day.</p><dl>')
+    p.append('<section class="section" id="method"><article class="block"><h2>How this was counted</h2>'
+             '<p class="lead">What was read, and what couldn\'t be counted, on this day.</p><dl>')
     for k, v, tip in counted_rows(q):
         p.append('<div class="kv"><dt title="{}">{}</dt><dd>{}</dd></div>'.format(esc(tip), esc(k), esc(v)))
-    p.append('</dl></div>')
+    p.append('</dl></article>')
 
-    # privacy
-    p.append('<div class="card privacy"><p>Nothing here leaves this computer unless you publish it. {}</p></div>'.format(esc(PRIVACY_LINE)))
-    p.append("</main></body></html>")
+    # sharing note
+    p.append('<aside class="privacy" aria-label="Sharing note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true">'
+             '<use href="#i-file"/></svg><p>Nothing here leaves this computer unless you publish it. {}</p></aside></section>'.format(esc(PRIVACY_LINE)))
+    p.append('<footer class="page-footer"><span>{}</span><a href="#overview">Back to top</a></footer>'.format(esc(PAGE_TITLE)))
+    p.append("</div></main><script>\n{}</script></body></html>".format(_asset("page.js")))
     return "".join(p)
 
 

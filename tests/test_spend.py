@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -463,14 +464,16 @@ class SpendTests(unittest.TestCase):
         self.assertIn(art, buf.getvalue())
         page = Path(art).read_text(encoding="utf-8")
         self.assertIn("<title>Claude Code Spend</title>", page)
-        self.assertIn(":root{--bg:", page)
+        self.assertIn(":root{", page)
+        self.assertIn("--green:#267e5c", page)
         self.assertIn("color-scheme:light", page)
         self.assertNotIn("prefers-color-scheme", page)
         self.assertNotIn('data-theme', page)
-        self.assertIn("font:15px/1.5 Arial,sans-serif", page)
-        self.assertIn("body{margin:0;background:var(--bg)", page)
+        self.assertIn("font:16px/1.55 Arial,sans-serif", page)
+        self.assertIn("body{margin:0;background:var(--white)", page)
         self.assertNotIn("http-equiv", page)
-        self.assertNotIn("<script", page)
+        self.assertEqual(page.count("<script"), 1)                  # the inlined navigation script
+        self.assertNotIn("<script src", page)
 
     # ---- TLDR rules
 
@@ -605,6 +608,154 @@ class SpendTests(unittest.TestCase):
         self.fx.write("my [proj]/s.jsonl", [line("m1", "r1", inp=1_000_000)])
         _, s = run_summary(self.fx.root)
         self.assertAlmostEqual(s["total"], 2.00, places=6)
+
+
+EVIL_AGENT = 'EVIL "NAME" <img src=x onerror=alert(1)> [opus]'
+EVIL_PROMPT = "<script>alert(1)</script> & more"
+EVIL_PROJECT = "-home-<x>"
+# Built from reversed pieces so this file does not contain the words it checks for.
+FORBIDDEN = re.compile("|".join(["adwogiek"[::-1], r"\b" + "iek"[::-1] + r"\b", "adwog"[::-1]]), re.I)
+REPO = Path(__file__).resolve().parent.parent
+
+
+class PageTests(unittest.TestCase):
+    """The HTML page: one document, the shared page system, safe text, no stray totals."""
+
+    def setUp(self):
+        self.fx = Fixture()
+        self.addCleanup(self.fx.close)
+        self.fx.write(EVIL_PROJECT + "/s1.jsonl", [
+            user(EVIL_PROMPT, ts=today_at(9)),
+            line("m1", "r1", model="claude-opus-5-5", ts=today_at(9, 5), inp=2000, out=30000, cr=9_000_000, w5=400_000, w1=200_000),
+            line("m2", "r2", model="claude-future-9", ts=today_at(15), inp=1000, out=500),
+            cost_state(9.0, {"claude-opus-5-5": 8.0, "claude-sonnet-5-5": 1.0})])
+        self.fx.write(EVIL_PROJECT + "/s1/subagents/agent-a1.jsonl", [
+            user(EVIL_PROMPT, ts=today_at(10)),
+            line("a1", "q1", model="claude-opus-5-5", ts=today_at(10, 5), inp=10000, out=20000, cr=2_000_000)])
+        self.fx.meta(EVIL_PROJECT + "/s1/subagents/agent-a1.meta.json", description=EVIL_AGENT, finished=True)
+        self.fx.write("other/s2.jsonl", [user("second", ts=today_at(8)), line("n1", "nr1", ts=today_at(8, 5), inp=300_000)])
+        _, self.s = run_summary(self.fx.root)
+        self.page = spend.render_html(self.s)
+
+    def markup(self):
+        """The page without its inlined CSS and script, which hold strings that only look like markup."""
+        return re.sub(r"<(style|script)>.*?</\1>", "", self.page, flags=re.S)
+
+    def ids(self, page=None):
+        return re.findall(r'\sid="([^"]*)"', page or self.page)
+
+    def test_one_document(self):
+        for page in (self.page, spend.render_html(self.s, True, "old prices")):
+            self.assertEqual(len(re.findall(r"<!doctype", page, re.I)), 1)
+            self.assertEqual(page.count("<html"), 1)
+            self.assertEqual(page.count("</html>"), 1)
+            self.assertEqual(page.count("<body"), 1)
+            self.assertEqual(page.count("<head>"), 1)
+            self.assertTrue(page.rstrip().endswith("</html>"))
+            self.assertNotIn("<link", page)                          # CSS and script are inlined
+            self.assertNotIn("<script src", page)
+            self.assertEqual(page.count("<script"), 1)
+            self.assertEqual(page.count("<style"), 1)
+
+    def test_shared_files_are_inlined(self):
+        self.assertIn(spend._asset("page.css"), self.page)
+        self.assertIn(spend._asset("page.js"), self.page)
+        self.assertNotIn("prefers-color-scheme", self.page)
+        self.assertNotIn("data-theme", self.page)
+
+    def test_no_forbidden_names_in_page_or_repo(self):
+        self.assertIsNone(FORBIDDEN.search(self.page))
+        files = [p for p in REPO.rglob("*") if p.is_file() and ".git" not in p.relative_to(REPO).parts
+                 and "__pycache__" not in p.relative_to(REPO).parts]
+        self.assertTrue(files)
+        for p in files:
+            self.assertIsNone(FORBIDDEN.search(p.name), p)
+            self.assertIsNone(FORBIDDEN.search(p.read_text(encoding="utf-8", errors="replace")), p)
+
+    def test_sidebar_brand(self):
+        self.assertIn('<a class="brand" href="#overview">Claude Code Spend</a>', self.page)
+
+    def test_journey_links_point_at_unique_sections(self):
+        nav = re.search(r'<nav class="journey-nav".*?</nav>', self.page, re.S).group(0)
+        targets = re.findall(r'<a class="journey-link" href="#([^"]+)"', nav)
+        self.assertEqual(targets, [sid for sid, _, _ in spend.SECTIONS])
+        self.assertEqual(len(set(targets)), len(targets))
+        ids = self.ids()
+        for t in targets:
+            self.assertEqual(ids.count(t), 1, t)
+            self.assertRegex(self.page, r'<(section|header)[^>]* id="{}"|<(section|header) id="{}"'.format(t, t))
+        for ref in re.findall(r'href="#([^"]+)"', self.markup()):
+            self.assertEqual(ids.count(ref), 1, ref)
+        self.assertEqual(ids.count("main"), 1)
+        self.assertIn('aria-controls="journey-nav"', self.page)
+        self.assertEqual(ids.count("journey-nav"), 1)
+
+    def test_sections_present_even_when_empty(self):
+        empty = Fixture()
+        self.addCleanup(empty.close)
+        empty.write("p/s.jsonl", [line("m1", "r1", inp=1000)])
+        _, s = run_summary(empty.root)
+        page = spend.render_html(s)
+        for sid, _, _ in spend.SECTIONS:
+            self.assertEqual(self.ids(page).count(sid), 1, sid)
+
+    def test_all_ids_and_svg_ids_unique(self):
+        ids = self.ids()
+        self.assertEqual(len(ids), len(set(ids)))
+        patterns = re.findall(r'<pattern id="([^"]+)"', self.page)
+        self.assertEqual(len(patterns), 2)
+        self.assertEqual(len(set(patterns)), 2)
+        for ref in re.findall(r'url\(#([^)]+)\)', self.page):
+            self.assertIn(ref, ids)
+        for ref in re.findall(r'<use href="#([^"]+)"', self.markup()):
+            self.assertIn(ref, ids)
+
+    def test_hidden_calls_are_inside_totals_not_a_total_line(self):
+        hero = re.search(r"<header.*?</header>", self.page, re.S).group(0)
+        self.assertIn(spend.money(self.s["total"]), hero)
+        self.assertNotIn("idden", hero)
+        tiles = re.search(r'<div class="tiles">.*?</div></div>', self.page, re.S).group(0)
+        self.assertNotIn("idden", tiles)
+        for cls in ("stat", "tile", "hero-metric"):
+            for block in re.findall(r'<div class="{}".*?</div>'.format(cls), self.page, re.S):
+                self.assertNotIn("idden", block)
+        self.assertNotIn("Logged total", self.page)
+        self.assertNotIn("Total with", self.page)
+        self.assertGreater(self.s["not_logged"], 0)
+        hidden_row = next(t for t in self.s["token_types"] if t["key"] == "hidden")
+        self.assertAlmostEqual(sum(t["cost"] for t in self.s["token_types"]), self.s["total"], places=6)
+        self.assertAlmostEqual(hidden_row["cost"], self.s["not_logged"], places=6)
+
+    def test_untrusted_text_is_escaped(self):
+        for raw in ("<script>alert(1)</script>", "<img src=x", 'EVIL "NAME"', "-home-<x>", "onerror=alert(1)>"):
+            self.assertNotIn(raw, self.page)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt; &amp; more", self.page)
+        self.assertIn("EVIL &quot;NAME&quot; &lt;img src=x onerror=alert(1)&gt; [opus]", self.page)
+        self.assertIn("-home-&lt;x&gt;", self.page)
+        self.assertEqual(self.page.count("<script"), 1)              # only the inlined navigation script
+        self.assertEqual(len(re.findall(r"<img", self.page)), 0)
+
+    def test_no_update_or_refresh_button(self):
+        self.assertEqual(self.page.count("<button"), 1)             # the Sections menu button
+        self.assertNotRegex(self.page, r"(?i)<button[^>]*>[^<]*(update|refresh)")
+        self.assertNotIn("http-equiv", self.page)                   # --watch alone adds a reload
+
+    def test_watch_page_reloads_itself(self):
+        self.assertIn('http-equiv="refresh"', spend.render_html(self.s, True))
+
+    def test_tables_scroll_in_own_region(self):
+        tables = self.page.count("<table")
+        regions = re.findall(r'<div class="scroll table-scroll"[^>]* tabindex="0" role="region" aria-label="[^"]+"><table', self.page)
+        self.assertEqual(tables, len(regions))
+        self.assertEqual(tables, 6)
+        self.assertEqual(self.page.count('scope="col"'), self.page.count("<th "))
+        self.assertEqual(len(re.findall(r'<div class="scroll chart" tabindex="0" role="region"', self.page)), 2)
+
+    def test_product_names_and_stripes(self):
+        self.assertIn("Claude Code", self.page)
+        self.assertNotIn("Claude Co-work", self.page)
+        self.assertIn("gapsw", self.page)                           # striped swatch for hidden calls in the chart key
+        self.assertIn('class="gapfill" fill="url(#hatch-week)"', self.page)
 
 
 if __name__ == "__main__":
