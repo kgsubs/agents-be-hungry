@@ -344,7 +344,7 @@ class SpendTests(unittest.TestCase):
         self.assertEqual(code, 0)
         j = json.loads(buf.getvalue())
         for k in ("date", "generated", "estimate_line", "total", "yesterday", "change", "average", "token_types",
-                  "models", "sessions", "subagents", "projects", "hours", "days", "quality", "prices_warning"):
+                  "models", "sessions", "subagents", "projects", "hours", "days", "quality", "prices_warning", "tldr"):
             self.assertIn(k, j)
         self.assertEqual(len(j["hours"]), 24)
         self.assertEqual(len(j["days"]), 7)
@@ -400,11 +400,109 @@ class SpendTests(unittest.TestCase):
         page = Path(art).read_text(encoding="utf-8")
         self.assertIn("<title>Claude Code Spend</title>", page)
         self.assertIn(":root{--bg:", page)
-        self.assertIn('@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){', page)
-        self.assertIn(':root[data-theme="dark"]{', page)
+        self.assertIn("color-scheme:light", page)
+        self.assertNotIn("prefers-color-scheme", page)
+        self.assertNotIn('data-theme', page)
+        self.assertIn("font:15px/1.5 Arial,sans-serif", page)
         self.assertIn("body{margin:0;background:var(--bg)", page)
         self.assertNotIn("http-equiv", page)
         self.assertNotIn("<script", page)
+
+    # ---- TLDR rules
+
+    def tl(self):
+        _, s = run_summary(self.fx.root)
+        return s, s["tldr"]
+
+    def test_tldr_empty_state(self):
+        self.fx.write("proj/s.jsonl", [user("tiny"), line("m1", "r1", inp=1000)])
+        s, t = self.tl()
+        self.assertTrue(t["empty"])
+        self.assertEqual(t["recommendations"], [])
+        self.assertIn("Too little spend", spend.render_html(s))
+        self.assertIn("Too little spend", spend.render_text(s))
+
+    def test_tldr_findings_and_meaning(self):
+        self.fx.write("proj/s.jsonl", [user("big"), line("m1", "r1", cr=100_000_000, inp=5_000_000)])
+        s, t = self.tl()
+        self.assertFalse(t["empty"])
+        self.assertTrue(2 <= len(t["findings"]) <= 3)
+        self.assertEqual(t["findings"][0], "Re-reading the conversation was 50% of today's cost.")
+        self.assertIn("sonnet-5-5 did 100% of the spend", t["findings"][1])
+        self.assertIn("re-reading", t["meaning"])
+
+    def test_tldr_rule_a_reread(self):
+        self.fx.write("proj/s.jsonl", [user("long"), line("m1", "r1", cr=100_000_000, inp=5_000_000)])
+        _, t = self.tl()
+        r = t["recommendations"][0]
+        self.assertIn("fresh session", r["action"])
+        self.assertAlmostEqual(r["saving_usd"], 5.00, places=6)     # half of $10 of cache reads
+        self.assertIn("$10.00 x 0.50", r["basis"])
+
+    def test_tldr_rule_a_needs_large_share(self):
+        self.fx.write("proj/s.jsonl", [user("x"), line("m1", "r1", cr=1_000_000, inp=5_000_000)])
+        _, t = self.tl()
+        self.assertFalse(any("fresh session" in r["action"] for r in t["recommendations"]))
+
+    def test_tldr_rule_b_opus_subagents(self):
+        self.fx.write("proj/s.jsonl", [user("p"), line("m1", "r1", inp=1_000_000)])
+        self.fx.write("proj/s/subagents/agent-1.jsonl", [line("m2", "r2", model="claude-opus-5-5", inp=1_000_000)])
+        self.fx.meta("proj/s/subagents/agent-1.meta.json", description="BIG JOB", finished=True)
+        _, t = self.tl()
+        r = next(r for r in t["recommendations"] if "Sonnet" in r["action"])
+        self.assertAlmostEqual(r["saving_usd"], 2.00, places=6)     # $4.00 on Opus, $2.00 at Sonnet prices
+        self.assertIn("BIG JOB ($4.00)", r["action"])
+        self.assertIn("$4.00 - $2.00 = $2.00", r["basis"])
+
+    def test_tldr_rule_c_one_hour_writes(self):
+        self.fx.write("proj/s.jsonl", [user("p"), line("m1", "r1", w1=1_000_000)])
+        _, t = self.tl()
+        r = next(r for r in t["recommendations"] if "5 minutes" in r["action"])
+        self.assertAlmostEqual(r["saving_usd"], 1.50, places=6)     # $4.00 at the 1h rate, $2.50 at 5m
+        self.assertIn("$4.00 - $2.50 = $1.50", r["basis"])
+
+    def test_tldr_rule_d_top_subagents(self):
+        self.fx.write("proj/s.jsonl", [user("p"), line("m1", "r1", inp=50_000)])
+        for i in (1, 2, 3):
+            self.fx.write("proj/s/subagents/agent-{}.jsonl".format(i), [line("a{}".format(i), "q{}".format(i), inp=1_000_000)])
+            self.fx.meta("proj/s/subagents/agent-{}.meta.json".format(i), description="AGENT {}".format(i), finished=True)
+        _, t = self.tl()
+        r = next(r for r in t["recommendations"] if "Check whether these subagents" in r["action"])
+        self.assertEqual(r["saving_usd"], 0.0)
+        self.assertIn("AGENT 1", r["action"])
+
+    def test_tldr_rule_e_background_calls(self):
+        self.fx.write("proj/closed.jsonl", [line("m1", "r1", inp=1_000_000),
+                                            cost_state(3.00, {"claude-sonnet-5-5": 3.00})])
+        _, t = self.tl()
+        r = next(r for r in t["recommendations"] if "background" in r["action"])
+        self.assertEqual(r["saving_usd"], 0.0)
+        self.assertIn("$1.00", r["basis"])
+
+    def test_tldr_ranked_by_saving_and_capped_at_three(self):
+        self.fx.write("proj/s.jsonl", [user("p"), line("m1", "r1", cr=100_000_000, inp=5_000_000, w1=1_000_000)])
+        self.fx.write("proj/s/subagents/agent-1.jsonl", [line("m2", "r2", model="claude-opus-5-5", inp=1_000_000)])
+        _, t = self.tl()
+        rec = t["recommendations"]
+        self.assertEqual(len(rec), 3)
+        self.assertEqual([r["saving_usd"] for r in rec], sorted((r["saving_usd"] for r in rec), reverse=True))
+        self.assertAlmostEqual(rec[0]["saving_usd"], 5.00, places=6)
+        self.assertIn("about $", t["meaning"])
+
+    def test_tldr_in_json_text_and_page(self):
+        self.fx.write("proj/s.jsonl", [user("p"), line("m1", "r1", cr=100_000_000, inp=5_000_000)])
+        s, t = self.tl()
+        for k in ("findings", "meaning", "recommendations"):
+            self.assertIn(k, t)
+        for k in ("action", "saving_usd", "basis"):
+            self.assertIn(k, t["recommendations"][0])
+        self.assertEqual(json.loads(json.dumps(s))["tldr"], t)
+        text = spend.render_text(s)
+        self.assertLess(text.index("TLDR"), text.index("Estimate at API list prices"))
+        page = spend.render_html(s)
+        self.assertIn("Top 3 ways to spend less", page)
+        self.assertIn('title="Cache reads in the 1 longest main sessions', page)
+        self.assertLess(page.index("TLDR"), page.index("Where the money went"))
 
     def test_html_out_and_no_browser(self):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1_000_000)])

@@ -44,7 +44,7 @@ On Windows use `python` or `py` in place of `python3`. The file path of the dash
 
 When Claude can make artifacts (the Artifact tool is available in the session), the skill publishes the page to your Claude account as a private artifact and keeps one link that updates:
 
-1. `python3 spend.py --artifact` writes `artifact.html` in the skill folder: one self-contained page, no scripts, no outside fonts, no auto-refresh, light and dark mode.
+1. `python3 spend.py --artifact` writes `artifact.html` in the skill folder: one self-contained page, no scripts, no outside fonts, no auto-refresh, light mode only.
 2. The first time, Claude publishes it as a new artifact and saves its URL to `.artifact-url` in the skill folder.
 3. Each later time you ask, Claude rewrites `artifact.html` and republishes it to the saved URL, so the same link shows the latest numbers.
 4. If that artifact was deleted or the publish is refused, Claude publishes a new one and saves the new URL.
