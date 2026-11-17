@@ -28,12 +28,14 @@ If your Claude can make artifacts, the page is saved to your Claude account as a
 2. Send Claude this message:
 
 ```
-Install the agents-be-hungry skill: clone https://github.com/kgsubs/agents-be-hungry into ~/.claude/skills/agents-be-hungry (on Windows: %USERPROFILE%\.claude\skills\agents-be-hungry). If git isn't installed, download https://github.com/kgsubs/agents-be-hungry/archive/refs/heads/main.zip and put the files from its agents-be-hungry-main folder there instead. Then tell me what I've spent today.
+Install the agents-be-hungry skill: clone https://github.com/kgsubs/agents-be-hungry into ~/.claude/skills/agents-be-hungry (on Windows: %USERPROFILE%\.claude\skills\agents-be-hungry). If git isn't installed, download https://github.com/kgsubs/agents-be-hungry/archive/refs/heads/main.zip and put the files from its agents-be-hungry-main folder there instead. Then tell me it's installed.
 ```
 
 3. If Claude asks for permission, say yes.
 
-Claude installs it and tells you today's total. If Claude doesn't seem to know the skill yet, start a new Claude Code session.
+4. Then ask Claude: "What have I spent today?"
+
+If Claude doesn't seem to know the skill yet, start a new Claude Code session.
 
 It needs Python 3. Most computers already have it. If Claude says it's missing, ask Claude to help you install it. Nothing else is needed.
 
