@@ -1,5 +1,5 @@
 {
-  "_comment": "Prices in US dollars per million tokens, read from Anthropic's official pricing page. Model keys are matched against message.model, with an optional trailing -YYYYMMDD date. Keys are built from the model names on the page. fast_multiplier applies when a response's usage.speed is 'fast'. us_multiplier applies when usage.inference_geo is 'us'.",
+  "_comment": "Prices in US dollars per million tokens, read from Anthropic's official pricing page. Model keys are matched against message.model, with an optional trailing -YYYYMMDD date. Keys are built from the model names on the page. fast_multiplier applies when a response's usage.speed is 'fast'. us_multiplier applies when usage.inference_geo is 'us', except on models with us_multiplier_applies set to false (the pricing page applies it to Claude 4.6 and later).",
   "source_url": "https://docs.claude.com/en/docs/about-claude/pricing",
   "date_read": "2026-11-15",
   "unit": "USD per million tokens",
@@ -116,21 +116,24 @@
       "output": 25,
       "cache_write_5m": 6.25,
       "cache_write_1h": 10,
-      "cache_read": 0.5
+      "cache_read": 0.5,
+      "us_multiplier_applies": false
     },
     "claude-opus-4-1": {
       "input": 15,
       "output": 75,
       "cache_write_5m": 18.75,
       "cache_write_1h": 30,
-      "cache_read": 1.5
+      "cache_read": 1.5,
+      "us_multiplier_applies": false
     },
     "claude-opus-4": {
       "input": 15,
       "output": 75,
       "cache_write_5m": 18.75,
       "cache_write_1h": 30,
-      "cache_read": 1.5
+      "cache_read": 1.5,
+      "us_multiplier_applies": false
     },
     "claude-sonnet-5": {
       "input": 2,
@@ -151,21 +154,24 @@
       "output": 15,
       "cache_write_5m": 3.75,
       "cache_write_1h": 6,
-      "cache_read": 0.3
+      "cache_read": 0.3,
+      "us_multiplier_applies": false
     },
     "claude-sonnet-4": {
       "input": 3,
       "output": 15,
       "cache_write_5m": 3.75,
       "cache_write_1h": 6,
-      "cache_read": 0.3
+      "cache_read": 0.3,
+      "us_multiplier_applies": false
     },
     "claude-haiku-4-5": {
       "input": 1,
       "output": 5,
       "cache_write_5m": 1.25,
       "cache_write_1h": 2,
-      "cache_read": 0.1
+      "cache_read": 0.1,
+      "us_multiplier_applies": false
     }
   }
 }

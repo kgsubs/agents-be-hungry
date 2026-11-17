@@ -187,7 +187,7 @@ def cost_parts(prices, price, tok, usage):
     mult = 1.0
     if usage.get("speed") == "fast" and price.get("fast_multiplier"):
         mult *= price["fast_multiplier"]
-    if usage.get("inference_geo") == "us":
+    if usage.get("inference_geo") == "us" and price.get("us_multiplier_applies", True):
         mult *= prices.get("us_multiplier", 1.0)
     parts = {k: tok[k] * p[k] / 1e6 * mult for k in PRICE_KEYS}
     parts["searches"] = tok["searches"] * prices.get("web_search_per_request", 0.0)
@@ -345,6 +345,31 @@ def session_files(root, min_mtime):
     return keep
 
 
+def oldest_log_day(root):
+    """The day the oldest transcript file under root/projects was last changed, or None. Looks at
+    every transcript file, not only the ones scan_history reads."""
+    oldest = None
+    base = os.path.join(root, "projects")
+    for pname in _listdir(base):
+        proj = os.path.join(base, pname)
+        for name in _listdir(proj):
+            full = os.path.join(proj, name)
+            if name.endswith(".jsonl") and os.path.isfile(full):
+                files = [full]
+            elif os.path.isdir(full):
+                files = _agent_files(os.path.join(full, "subagents"))
+            else:
+                continue
+            for f in files:
+                try:
+                    m = os.path.getmtime(f)
+                except OSError:
+                    continue
+                if oldest is None or m < oldest:
+                    oldest = m
+    return None if oldest is None else datetime.fromtimestamp(oldest).date()
+
+
 def has_transcripts(root):
     """True if at least one .jsonl transcript exists under root/projects."""
     base = os.path.join(root, "projects")
@@ -379,7 +404,7 @@ def read_meta(agent_path):
 
 
 def scan_history(root, first_day, prices, skip, seen_a):
-    """Daily totals only, for the 30, 60 and 90 day averages.
+    """Daily totals only, for the 30-day average.
 
     Reads the sessions that scan() did not read (not in skip) and keeps only what a daily
     total needs: each response's day and cost, and the tally lines. Lines that cannot be
@@ -470,7 +495,8 @@ def scan_history(root, first_day, prices, skip, seen_a):
                                         "cost": None if parts is None else sum(parts.values()), "dead": False})
                     if k2 is not None:
                         seen[k2] = (sig, new_idx)
-    return {"records": [r for r in records if not r["dead"]], "snapshots": dict(snapshots)}
+    return {"records": [r for r in records if not r["dead"]], "snapshots": dict(snapshots),
+            "oldest_log": oldest_log_day(root)}
 
 
 def scan(root, first_day, last_day, prices, history_days=0):
@@ -912,7 +938,8 @@ def window_average(data, gaps, target, days=AVG_DAYS, now=None):
     because they are only known when a session closes; None when now is not given.
     `target_logged` is target's own logged cost. Both averages are None (the page says how many more
     days it needs) unless the logs reach back to the first day of the window: the first day with
-    logged usage must be on or before it."""
+    logged usage, or the day the oldest transcript file on disk was last changed, must be on or
+    before it (idle days then count as $0)."""
     hist = data.get("history")
     recs = data["records"] + (hist["records"] if hist else [])
     start = target - timedelta(days=days)
@@ -946,7 +973,8 @@ def window_average(data, gaps, target, days=AVG_DAYS, now=None):
         for (d, _m), v in hg["day_model"].items():
             hidden[d] += v
     value = None
-    if first is not None and first <= start:
+    oldest = hist.get("oldest_log") if hist else None
+    if (first is not None and first <= start) or (oldest is not None and oldest <= start):
         value = sum(logged[start + timedelta(days=i)] + hidden[start + timedelta(days=i)] for i in range(days)) / days
     needed = 0 if value is not None else ((first - start).days if first is not None else days)
     return {"days": days, "average": value, "first_day": first.isoformat() if first else None, "needed": needed,

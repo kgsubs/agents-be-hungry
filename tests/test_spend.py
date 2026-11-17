@@ -15,7 +15,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import spend  # noqa: E402
 
-PRICES = spend.load_prices()
+# A copy of prices.json, so a price update does not change the expected dollar amounts here.
+PRICES = spend.load_prices(os.path.join(os.path.dirname(os.path.abspath(__file__)), "prices_fixture.json"))
 
 
 def iso(local_dt):
@@ -264,6 +265,17 @@ class SpendTests(unittest.TestCase):
         self.fx.write("proj/s.jsonl", [line("m1", "r1", inp=1_000_000, iterations=it)])
         _, s = run_summary(self.fx.root)
         self.assertAlmostEqual(s["total"], 2.00, places=6)
+
+    def test_us_multiplier_only_on_4_6_and_later(self):
+        self.fx.write("proj/s.jsonl", [
+            line("m1", "r1", model="claude-sonnet-4-5", inp=1_000_000, inference_geo="us"),
+            line("m2", "r2", model="claude-opus-4-1", inp=1_000_000, inference_geo="us"),
+            line("m3", "r3", model="claude-sonnet-4-6", inp=1_000_000, inference_geo="us"),
+            line("m4", "r4", model="claude-sonnet-4-5", inp=1_000_000)])
+        _, s = run_summary(self.fx.root)
+        self.assertAlmostEqual(model(s, "claude-sonnet-4-5")["cost"], 3.00 + 3.00, places=6)   # not multiplied
+        self.assertAlmostEqual(model(s, "claude-opus-4-1")["cost"], 15.00, places=6)
+        self.assertAlmostEqual(model(s, "claude-sonnet-4-6")["cost"], 3.00 * 1.1, places=6)   # multiplied
 
     def test_advisor_iteration_priced_at_advisor_model(self):
         it = [{"type": "message", "input_tokens": 1_000_000, "output_tokens": 0},
@@ -663,6 +675,20 @@ class SpendTests(unittest.TestCase):
         # the window starts 30 days back, so logs from 20 days back are 10 days short
         self.assertEqual(self.hero_stats(s), [(tip, "vs. 30-day average by now", "10 more days of data required"),
                                               (tip, "30-day daily average", "10 more days of data required")])
+
+    def test_average_shown_when_older_log_on_disk_and_idle_at_window_start(self):
+        # an old log file exists (changed 40 days ago) but has no usage; the usage read starts 5 days back
+        p = self.fx.write("proj/old.jsonl", [user("hi", ts=self.days_ago(40))])
+        t = (datetime.now() - timedelta(days=40)).timestamp()
+        os.utime(p, (t, t))
+        self.write_days([0, 5])
+        _, s = self.avg()
+        self.assertAlmostEqual(s[spend.PAGE_AVG_KEY]["average"], 2.00 / 30, places=6)   # idle days count as $0
+        self.assertEqual(s[spend.PAGE_AVG_KEY]["needed"], 0)
+        stat = self.hero_stats(s)[1]
+        self.assertEqual(stat[1:], ("30-day daily average", "$0.07"))
+        self.assertNotIn("more days", spend.render_html(s))
+        self.assertNotIn("more day of", spend.render_html(s))
 
     def test_average_exactly_30_days_back_counts_gap_days_as_zero(self):
         self.write_days([0, 2, 30])                       # first day is the first day of the window
